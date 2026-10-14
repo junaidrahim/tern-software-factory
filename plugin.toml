@@ -1,0 +1,13 @@
+schema = 1
+id = "tern-software-factory"
+name = "Software Factory"
+version = "0.1.0"
+description = "See the agents on your Tern host and jump to their panes."
+host = "host.luau"
+window = "window.luau"
+styles = ["agents.css"]
+
+[[blocks]]
+id = "agents"
+title = "Software Factory"
+icon = "list"
