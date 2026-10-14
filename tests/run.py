@@ -7,7 +7,7 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 harness = (root / "tests/behavior.luau").read_text()
-for half in ("tracking", "host", "window"):
+for half in ("tracking", "limits", "host", "window"):
     harness = harness.replace(f"-- {half.upper()}_SOURCE", (root / f"{half}.luau").read_text())
 with tempfile.TemporaryDirectory() as directory:
     script = Path(directory) / "behavior.luau"

@@ -6,15 +6,24 @@
 [data-role='factory-agents'] > .sf { flex-shrink: 0; }
 [data-role='factory-heading'] { align-items: center; gap: 10px; flex-wrap: wrap; }
 [data-role='factory-heading'] .sf-badge { margin: 0; }
+/* Section titles: "Agents" and "Limits". */
+[data-role='factory-heading'] > .sf-text:first-child span,
+[data-role='factory-limits-heading'] > .sf-text:first-child span {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 24px;
+}
 [data-role='factory-grid'] {
-  --factory-columns: minmax(420px, 2.2fr) 150px minmax(230px, 1.3fr);
+  /* Label (Tern session, Project, Agent task), then Status. */
+  --factory-columns: minmax(520px, 1fr) 210px;
+  --factory-identity: 148px 170px minmax(0, 1fr);
   gap: 0;
   min-width: 0;
   overflow-x: auto;
   border: 1px solid var(--l2);
   border-radius: 8px;
 }
-[data-role='factory-grid'] > .sf { min-width: 848px; flex-shrink: 0; }
+[data-role='factory-grid'] > .sf { min-width: 780px; flex-shrink: 0; }
 [data-role='factory-columns'], [data-role='factory-grid'] .sf-item {
   display: grid;
   grid-template-columns: var(--factory-columns);
@@ -33,56 +42,52 @@
   font-size: 12px;
   font-weight: 600;
 }
-/* Keep native selection, mouse activation and scrolling. Four label spans
-   create two columns with a secondary line under each. */
-[data-role='factory-identifiers'], [data-role='factory-grid'] .sf-item-label {
+/* Every row is one compact line at the virtual scroller's row height, so plain
+   and virtual lists (over 200 rows) share native metrics and selection can
+   reveal the last row. Three label spans: Tern session, project and agent task
+   (for subagents: type, name, current tool and stats). */
+[data-role='factory-identifiers'] {
   display: grid;
-  grid-template-columns: 148px minmax(0, 1fr);
-  gap: 4px 12px;
+  grid-template-columns: var(--factory-identity);
+  column-gap: 10px;
   min-width: 0;
-  max-width: none;
 }
 [data-role='factory-grid'] .sf-item {
-  height: 60px;
-  min-height: 60px;
-  padding-top: 9px;
-  padding-bottom: 9px;
+  height: calc(var(--sf-lh) + 6px);
+  min-height: 0;
+  padding-top: 3px;
+  padding-bottom: 3px;
   border-bottom: 1px solid var(--l2);
-  line-height: 18px;
 }
 [data-role='factory-grid'] .sf-item:last-child { border-bottom: 0; }
 [data-role='factory-grid'] .sf-item-label,
-[data-role='factory-grid'] .sf-item-detail,
-[data-role='factory-grid'] .sf-item-value {
+[data-role='factory-grid'] .sf-item-detail {
   min-width: 0;
   max-width: none;
   margin: 0;
   overflow: hidden;
   text-align: left;
-  line-height: 18px;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: var(--sf-lh);
+}
+[data-role='factory-grid'] .sf-item-value { display: none; }
+[data-role='factory-grid'] .sf-item-label {
+  display: grid;
+  grid-template-columns: var(--factory-identity);
+  column-gap: 10px;
 }
 [data-role='factory-grid'] .sf-item-label > span,
-[data-role='factory-grid'] .sf-item-detail > span,
-[data-role='factory-grid'] .sf-item-value > span {
+[data-role='factory-grid'] .sf-item-detail > span {
   display: block;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-[data-role='factory-grid'] .sf-item-label > span:nth-child(3),
-[data-role='factory-grid'] .sf-item-label > span:nth-child(4),
-[data-role='factory-grid'] .sf-item-detail > span:last-child,
-[data-role='factory-grid'] .sf-item-value > span:last-child { font-size: 11px; line-height: 16px; }
-[data-role='factory-grid'] .sf-item-detail {
-  display: grid;
-  grid-template-columns: 10px minmax(0, 1fr);
-  gap: 4px 7px;
-  align-items: center;
-}
-[data-role='factory-grid'] .sf-item-detail > span:last-child { grid-column: 2; }
+/* Status: dot, label, then a note that gives way first. */
+[data-role='factory-grid'] .sf-item-detail { display: flex; align-items: center; gap: 7px; }
 [data-role='factory-grid'] .sf-item-detail > span:first-child {
+  flex: none;
   width: 7px;
   height: 7px;
   font-size: 0;
@@ -90,22 +95,8 @@
   background: currentColor;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--tc) 12%, transparent);
 }
-[data-role='factory-grid'] .sf-item-value { display: flex; flex-direction: column; gap: 4px; }
-[data-role='factory-grid'] .sf-item-value > span:last-child { font-family: var(--mono); }
-/* Tern's virtual scroller (over 200 agents) uses fixed native row metrics.
-   Match those metrics so selection can still reveal the final agent. The
-   full model/update remain in the row tooltip and selected-agent panel. */
-[data-role='factory-grid'] .sf-list.virtual .sf-item {
-  height: calc(var(--sf-lh) + 6px);
-  min-height: 0;
-  padding-top: 3px;
-  padding-bottom: 3px;
-}
-[data-role='factory-grid'] .sf-list.virtual .sf-item-label > span:nth-child(3),
-[data-role='factory-grid'] .sf-list.virtual .sf-item-label > span:nth-child(4),
-[data-role='factory-grid'] .sf-list.virtual .sf-item-detail > span:last-child,
-[data-role='factory-grid'] .sf-list.virtual .sf-item-value > span:first-child { display: none; }
-[data-role='factory-grid'] .sf-list.virtual .sf-item-value > span:last-child { font-size: 12px; }
+[data-role='factory-grid'] .sf-item-detail > span:nth-child(2) { flex: none; }
+[data-role='factory-grid'] .sf-item-detail > span:nth-child(3) { flex: 1; font-size: 11px; }
 [data-role='factory-grid'] .sf-item[data-tone='accent'] .sf-item-detail > span:first-child {
   animation: tern-software-factory-working 2.2s ease-in-out infinite;
 }
@@ -129,6 +120,29 @@
 @media (prefers-reduced-motion: reduce) {
   [data-role='factory-grid'] .sf-item[data-tone] .sf-item-detail > span:first-child { animation: none; }
 }
+/* Subagent rows sit under their agent, tinted and indented. A fourth label
+   span carries model, tokens and run time. */
+[data-role='factory-grid'] .sf-item[data-role='factory-subagent'] {
+  background: color-mix(in srgb, var(--l1) 60%, transparent);
+}
+[data-role='factory-grid'] .sf-item[data-role='factory-subagent'] .sf-item-label {
+  grid-template-columns: 148px 170px minmax(0, 1fr) minmax(0, 0.6fr);
+}
+[data-role='factory-grid'] .sf-item[data-role='factory-subagent'] .sf-item-label > span:first-child {
+  box-sizing: border-box;
+  padding-left: 12px;
+}
+[data-role='factory-grid'] .sf-item[data-role='factory-subagent'] .sf-item-label > span:nth-child(4) {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+[data-role='factory-limits'] {
+  padding: 12px;
+  gap: 10px;
+  font-family: var(--sans);
+}
+[data-role='factory-limits'] > .sf { flex-shrink: 0; }
+[data-role='factory-limits-heading'] { align-items: baseline; gap: 10px; }
 [data-role='factory-footer'] {
   padding: 10px 12px;
   gap: 8px;
@@ -137,16 +151,32 @@
 }
 [data-role='factory-footer'] .sf-text { overflow-wrap: anywhere; }
 [data-role='factory-activity'] {
-  gap: 14px;
-  padding: 14px;
+  gap: 10px;
+  padding: 14px 16px;
   min-width: 0;
   border: 1px solid var(--l2);
   border-radius: 8px;
 }
-[data-role='factory-detail-heading'] { gap: 8px; align-items: center; flex-wrap: wrap; }
-[data-role='factory-detail-heading'] > .sf-text { flex: 1; min-width: 150px; overflow-wrap: anywhere; }
-[data-role='factory-detail-heading'] .sf-badge { margin: 0; }
-[data-role='factory-request'], [data-role='factory-response'] { gap: 8px; min-width: 0; }
-[data-role='factory-request'] { max-height: 110px; overflow-y: auto; }
-[data-role='factory-response'] { max-height: 260px; overflow-y: auto; }
+[data-role='factory-activity'] > .sf { flex-shrink: 0; }
+[data-role='factory-detail-heading'] { gap: 10px; align-items: center; }
+[data-role='factory-detail-heading'] > .sf-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+[data-role='factory-detail-heading'] > .sf-text span { font-size: 15px; font-weight: 600; line-height: 22px; }
+[data-role='factory-detail-heading'] .sf-badge { margin: 0; flex: none; }
+[data-role='factory-detail-meta'] span { font-size: 12px; }
+/* One labelled section: a small caption over its content, set off by a rule. */
+[data-role='factory-section'] {
+  gap: 6px;
+  min-width: 0;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--l2);
+  max-height: 280px;
+  overflow-y: auto;
+}
+[data-role='factory-section'] > .sf-text:first-child span {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
 [data-role='factory-activity'] .sf-text, [data-role='factory-activity'] .sf-md { overflow-wrap: anywhere; }
