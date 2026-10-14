@@ -20,8 +20,10 @@ The path is the full working directory. Scroll horizontally in narrow panes.
 Working, waiting, and idle agents stay in the list. Exited agents leave the list.
 
 Each row also shows the model, a short latest-update preview, and the project
-folder above its full path. A pulsing dot marks working agents. Amber pulses
-mark agents that need input; red pulses mark failed turns or prompt delivery.
+folder above its full path. Rows leave out Nerd Font icons, such as the one omp
+puts before its session titles; the activity panel keeps them. A pulsing dot
+marks working agents. Amber pulses mark agents that need input; red pulses mark
+failed turns or prompt delivery.
 Idle dots stay still. The pulses respect Tern's Reduce Motion setting and stop
 when the pane is hidden. There is no sound.
 

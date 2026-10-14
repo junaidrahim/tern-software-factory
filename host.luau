@@ -39,6 +39,18 @@ local function age(seconds)
 	return tostring(math.floor(seconds / 3600)) .. "h ago"
 end
 
+-- Tern renders a Private Use Area glyph (Nerd Font icons, such as omp's title
+-- prefix) as a separate icon span. Row cells are laid out by span position, so
+-- an extra span shifts every later cell. Row text omits these glyphs.
+local function plain(value)
+	local stripped = value
+		:gsub("\xEE[\x80-\xBF][\x80-\xBF]", "")
+		:gsub("\xEF[\x80-\xA3][\x80-\xBF]", "")
+		:gsub("\xF3[\xB0-\xBF][\x80-\xBF][\x80-\xBF]", "")
+		:gsub("\xF4[\x80-\x8F][\x80-\xBF][\x80-\xBF]", "")
+	return (stripped:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
 local function row_status(agent)
 	if agent.delivery_error and agent.delivery_error ~= "" then
 		return { label = "Delivery failed", tone = "error", note = "Needs attention" }
@@ -106,22 +118,27 @@ tern.block.define("agents", {
 			local status = row_status(agent)
 			local category = if status.tone == "error" then "failed" else agent.state
 			if counts[category] then counts[category] += 1 end
-			local model = if agent.model and agent.model ~= "" then agent.model else "Model not reported"
-			local preview = if agent.delivery_error and agent.delivery_error ~= "" then agent.delivery_error
-				elseif agent.preview and agent.preview ~= "" then agent.preview else "No update yet"
-			local path = if agent.cwd ~= "" then agent.cwd else "—"
-			local project = agent.cwd:match("([^/\\]+)[/\\]*$") or path
+			local session = plain(agent.session)
+			local title = plain(agent.title)
+			if title == "" then title = "Agent " .. string.format("%.0f", agent.pane) end
+			local model = plain(agent.model or "")
+			if model == "" then model = "Model not reported" end
+			local preview = plain(if agent.delivery_error and agent.delivery_error ~= "" then agent.delivery_error else agent.preview or "")
+			if preview == "" then preview = "No update yet" end
+			local cwd = plain(agent.cwd)
+			local path = if cwd ~= "" then cwd else "—"
+			local project = cwd:match("([^/\\]+)[/\\]*$") or path
 			table.insert(rows, ui.node("item", {
 				key = "p" .. string.format("%.0f", agent.pane),
 				label = {
-					ui.span(agent.session, "muted"), ui.span(agent.title, "strong"),
+					ui.span(session, "muted"), ui.span(title, "strong"),
 					ui.span(model, "muted"), ui.span(preview, "muted"),
 				},
 				detail = { ui.span("●", status.tone), ui.span(status.label, status.tone), ui.span(status.note, "muted") },
 				value = { ui.span(project, "strong"), ui.span(path, "muted") },
 				tone = status.tone,
-				title = agent.session .. "\n" .. agent.title .. "\n" .. model .. "\n" .. status.label .. " · " .. status.note .. "\n" .. preview .. "\n" .. agent.cwd,
-				aria = agent.session .. ", " .. agent.title .. ", " .. status.label .. ", " .. model .. ", " .. preview .. ", " .. path,
+				title = session .. "\n" .. title .. "\n" .. model .. "\n" .. status.label .. " · " .. status.note .. "\n" .. preview .. "\n" .. cwd,
+				aria = session .. ", " .. title .. ", " .. status.label .. ", " .. model .. ", " .. preview .. ", " .. path,
 			}))
 		end
 		local selected = state.agents[selected_index(state)]

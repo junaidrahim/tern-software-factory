@@ -90,13 +90,14 @@ assert(focused == 200, "Enter must route to the selected pane, even in another s
 key("down")
 assert(state.selected == 300)
 agents[2].state = "working"
-localAgent.title = "Renamed task"
+localAgent.title = "\u{f418} Renamed task"
 tick(cx)
 assert(state.selected == 300, "Refreshing status or titles must preserve selection")
 local view = definition.view(state, blockCx)
 assert(#view.main.c[3].c[2].c == 2 and view.main.c[3].c[2].p.selected == "main.directory.agents.p300")
 assert(view.main.c[3].c[2].c[1].p.tone == "error", "Prompt delivery failures need an attention indicator")
 assert(view.main.c[3].c[2].c[1].p.label[3].t == "Test model", "Show the model in the row")
+assert(view.main.c[3].c[2].c[1].p.label[2].t == "Renamed task", "Icon glyphs must not split the agent session cell")
 definition.event(state, { ev = "select", id = "main.directory.agents", item = "main.directory.agents.p200" }, blockCx)
 assert(state.selected == 200)
 definition.event(state, { ev = "activate", id = "main.directory.agents", item = "main.directory.agents.p300" }, blockCx)
