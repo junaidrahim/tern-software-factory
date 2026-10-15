@@ -15,14 +15,26 @@ Open the Tern command palette. Select **New Software Factory block**.
 ## Use
 
 The list updates each second. It shows agents from all sessions on the block's
-host. The columns are **Tern session**, **Project**, **Agent task**, and
-**Status**. Scroll horizontally in narrow panes. Working, waiting, and idle
+host. The columns are **Tern session**, **Project**, **Path**, **Agent task**,
+and **Status**. Scroll horizontally in narrow panes. Working, waiting, and idle
 agents stay in the list. Exited agents leave the list.
 
-Each agent is one compact line. **Agent task** is a one-sentence summary of what
-the agent did in the last three minutes; it shows the omp session title until the
-first summary arrives, and a prompt delivery error when there is one. The row
-tooltip shows the session title, model, and full working directory. Rows leave
+Each agent is one compact line. **Project** is the name of the agent's working
+directory. **Path** is the directory of the file the agent changed most
+recently, read from omp's structured chat: the target of its latest successful
+`edit`, `write`, or `ast_edit` call (omp's `file://` link when it has one, else
+the target resolved against the working directory). Reads, failed edits, MCP
+tool calls, and shell commands do not count. Paths inside the working directory
+are relative (`./` is the working directory itself, `src/lib/` a subdirectory);
+others start from `~` or `/`. Until the agent changes a file, Path shows `./`.
+The plugin remembers the latest path for each agent until the agent exits. When
+it first sees an agent, including after a reload, it looks back over the last 200
+chat messages for the newest change. A long path keeps its end: `…/tests/fixtures/`.
+
+**Agent task** is a one-sentence summary of what the agent did in the last three
+minutes; it shows the omp session title until the first summary arrives, and a
+prompt delivery error when there is one. The row tooltip shows the session
+title, model, full path, and working directory. Rows leave
 out Nerd Font icons, such as the one omp puts before its session titles. A
 pulsing dot marks working agents. Amber pulses mark agents that need input; red
 pulses mark failed turns or prompt delivery.
@@ -37,8 +49,9 @@ for the agent whose summary is oldest. Idle agents keep their last summary, and
 a failed summary keeps the previous one. Summaries reset when the plugin reloads.
 
 While an omp task runs, each of its subagents gets a compact line under the
-agent: the subagent type, name, current tool or assignment, status, model,
-tokens, and run time. The agent's status notes how many subagents are running.
+agent: the subagent type, name, the agent's path (muted), current tool or
+assignment, status, model, tokens, and run time. The agent's status notes how
+many subagents are running.
 Select a subagent row to see its context use, cost, requests, tool count,
 thinking level, and assignment. Enter goes to the parent agent's pane.
 Subagent rows leave when their task finishes.
@@ -61,9 +74,10 @@ The plugin does not scan shell processes or require the `tern` executable at run
 
 The header counts working, waiting, and idle agents, and running subagents.
 Select a row to open its panel: the agent task as its heading, the status, one
-line with the Tern session, project, model, last completed turn, and session
-title, then the latest assistant response from omp's structured chat. A failed
-turn or prompt delivery error appears above the response.
+line with the Tern session, project, path (when it is not `./`), model, last
+completed turn, and session title, then the latest assistant response from
+omp's structured chat. A failed turn or prompt delivery error appears above the
+response.
 
 The panel updates each second for the selected agent. It reads at most 32 recent
 messages and limits text length. Long responses scroll inside the panel. If a

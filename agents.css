@@ -14,16 +14,17 @@
   line-height: 24px;
 }
 [data-role='factory-grid'] {
-  /* Label (Tern session, Project, Agent task), then Status. */
-  --factory-columns: minmax(520px, 1fr) 210px;
-  --factory-identity: 148px 170px minmax(0, 1fr);
+  /* Label (Tern session, Project, Path, Agent task), then Status. The agent
+     task takes all remaining width. */
+  --factory-columns: minmax(560px, 1fr) 210px;
+  --factory-identity: 120px 130px 160px minmax(0, 1fr);
   gap: 0;
   min-width: 0;
   overflow-x: auto;
   border: 1px solid var(--l2);
   border-radius: 8px;
 }
-[data-role='factory-grid'] > .sf { min-width: 780px; flex-shrink: 0; }
+[data-role='factory-grid'] > .sf { min-width: 820px; flex-shrink: 0; }
 [data-role='factory-columns'], [data-role='factory-grid'] .sf-item {
   display: grid;
   grid-template-columns: var(--factory-columns);
@@ -44,8 +45,8 @@
 }
 /* Every row is one compact line at the virtual scroller's row height, so plain
    and virtual lists (over 200 rows) share native metrics and selection can
-   reveal the last row. Three label spans: Tern session, project and agent task
-   (for subagents: type, name, current tool and stats). */
+   reveal the last row. Four label spans: Tern session, project, path and agent
+   task (for subagents: type, name, the parent's path, current tool and stats). */
 [data-role='factory-identifiers'] {
   display: grid;
   grid-template-columns: var(--factory-identity);
@@ -84,6 +85,12 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* Path: monospace and fixed-width, so host.luau can shorten long paths to fit
+   while keeping their end. */
+[data-role='factory-grid'] .sf-item .sf-item-label > span:nth-child(3) {
+  font-family: var(--mono);
+  font-size: 11px;
+}
 /* Status: dot, label, then a note that gives way first. */
 [data-role='factory-grid'] .sf-item-detail { display: flex; align-items: center; gap: 7px; }
 [data-role='factory-grid'] .sf-item-detail > span:first-child {
@@ -120,19 +127,19 @@
 @media (prefers-reduced-motion: reduce) {
   [data-role='factory-grid'] .sf-item[data-tone] .sf-item-detail > span:first-child { animation: none; }
 }
-/* Subagent rows sit under their agent, tinted and indented. A fourth label
+/* Subagent rows sit under their agent, tinted and indented. A fifth label
    span carries model, tokens and run time. */
 [data-role='factory-grid'] .sf-item[data-role='factory-subagent'] {
   background: color-mix(in srgb, var(--l1) 60%, transparent);
 }
 [data-role='factory-grid'] .sf-item[data-role='factory-subagent'] .sf-item-label {
-  grid-template-columns: 148px 170px minmax(0, 1fr) minmax(0, 0.6fr);
+  grid-template-columns: 120px 130px 160px minmax(0, 1fr) minmax(0, 0.6fr);
 }
 [data-role='factory-grid'] .sf-item[data-role='factory-subagent'] .sf-item-label > span:first-child {
   box-sizing: border-box;
   padding-left: 12px;
 }
-[data-role='factory-grid'] .sf-item[data-role='factory-subagent'] .sf-item-label > span:nth-child(4) {
+[data-role='factory-grid'] .sf-item[data-role='factory-subagent'] .sf-item-label > span:nth-child(5) {
   font-family: var(--mono);
   font-size: 11px;
 }

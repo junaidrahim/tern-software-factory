@@ -150,7 +150,83 @@ local function sentence(output)
 	return squash(line, 200)
 end
 
+-- Tools that change files. omp marks a file target with targetKind "path";
+-- MCP and device writes (targetKind "text") change no file.
+local CHANGES = { edit = true, write = true, ast_edit = true }
+
+-- An absolute path without `.`, `..` or repeated slashes.
+local function normalize(path)
+	local parts = {}
+	for part in string.gmatch(path, "[^/]+") do
+		if part == ".." then
+			if #parts > 0 then table.remove(parts) end
+		elseif part ~= "." then
+			table.insert(parts, part)
+		end
+	end
+	return "/" .. table.concat(parts, "/")
+end
+
+-- Resolves `~/…` against home and relative paths against cwd; nil when neither applies.
+local function absolute(path, cwd, home)
+	if string.sub(path, 1, 1) == "/" then return normalize(path) end
+	if (path == "~" or string.sub(path, 1, 2) == "~/") and type(home) == "string" and home ~= "" then
+		return normalize(home .. string.sub(path, 2))
+	end
+	local base = if type(cwd) == "string" and cwd ~= "" then absolute(cwd, nil, home) else nil
+	return if base then normalize(base .. "/" .. path) else nil
+end
+
+-- The file a change tool touched: its `file://` link when done, else its target
+-- (relative to the agent's cwd, perhaps with a `:line` suffix).
+local function changed_file(tool, cwd, home)
+	if type(tool.href) == "string" then
+		local path = string.match(tool.href, "^file://[^/]*(/.*)$")
+		if path then
+			return normalize((string.gsub(path, "%%(%x%x)", function(hex) return string.char(tonumber(hex, 16)) end)))
+		end
+	end
+	if type(tool.target) ~= "string" then return nil end
+	local target = string.gsub(tool.target, ":[%d,%-]+$", "")
+	return if target ~= "" then absolute(target, cwd, home) else nil
+end
+
+-- The directory of the newest file the agent changed in `messages`, or nil.
+local function changed(messages, cwd, home)
+	local dir
+	for _, message in messages do
+		for _, tool in if type(message.tools) == "table" then message.tools else {} do
+			local file = if CHANGES[tool.name] and tool.status ~= "error" and tool.targetKind ~= "text"
+				then changed_file(tool, cwd, home) else nil
+			if file then
+				-- A glob (ast_edit) names its fixed leading directories.
+				local fixed = string.match(file, "^(.-)/[^/]*[%*%?%[{]")
+				dir = fixed or string.match(file, "^(.*)/[^/]*$")
+				if dir == "" then dir = "/" end
+			end
+		end
+	end
+	return dir
+end
+
+-- A directory as read from the agent's cwd: `./`, `sub/dir/`, else `~/…/` or `/…/`.
+local function where(dir, cwd, home)
+	local base = absolute(cwd or "", nil, home)
+	if base and dir == base then return "./" end
+	if base then
+		local prefix = if base == "/" then "/" else base .. "/"
+		if string.sub(dir, 1, #prefix) == prefix then return string.sub(dir, #prefix + 1) .. "/" end
+	end
+	if type(home) == "string" and home ~= "" then
+		local root = normalize(home)
+		if dir == root then return "~/" end
+		if string.sub(dir, 1, #root + 1) == root .. "/" then return "~" .. string.sub(dir, #root + 1) .. "/" end
+	end
+	return if dir == "/" then "/" else dir .. "/"
+end
+
 return {
 	read = read, preview = preview, subagents = subagents,
 	activity = activity, digest = digest, sentence = sentence,
+	absolute = absolute, changed = changed, where = where,
 }

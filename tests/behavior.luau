@@ -76,12 +76,12 @@ local cx = {
 	agents = {
 		list = function() return agents end,
 		transcript = function(_, pane, opts)
-			assert(opts.last <= 32, "Read a bounded history")
+			assert(opts.last <= 200, "Read a bounded history")
 			if pane ~= 200 then return {} end
 			return {
 				{role = "user", text = "Fix the failure"},
 				{role = "assistant", text = "Fixed the parser.", tools = {
-					{name = "edit", title = "Edit", status = "done", target = "parser.luau"},
+					{name = "edit", title = "Edit", status = "done", target = "src/parser.luau:12"},
 					{name = "bash", title = "Run tests", status = "running"},
 				}},
 			}
@@ -115,9 +115,13 @@ local function list(v) return v.main.c[3].c[2] end
 assert(#list(view).c == 2 and list(view).p.selected == "main.directory.agents.p300")
 assert(list(view).c[1].p.tone == "error", "Prompt delivery failures need an attention indicator")
 local first = list(view).c[1].p.label
-assert(#first == 3 and first[1].t == "Backend" and first[2].t == "backend" and first[3].t == "Prompt could not be sent",
-	"One compact line: Tern session, project, then the delivery error in place of the task")
-assert(list(view).c[2].p.label[3].t == "omp", "The session title stands in until a summary arrives")
+assert(#first == 4 and first[1].t == "Backend" and first[2].t == "backend" and first[4].t == "Prompt could not be sent",
+	"One compact line: Tern session, project, path, then the delivery error in place of the task")
+assert(first[3].t == "src/" and state.agents[1].work_dir == "/code/backend/src",
+	"A relative edit target resolves against the agent's cwd, without its line suffix")
+assert(list(view).c[2].p.label[3].t == "./" and state.agents[2].work_dir == "/code/website",
+	"An agent that changed nothing works in its cwd")
+assert(list(view).c[2].p.label[4].t == "omp", "The session title stands in until a summary arrives")
 assert(string.find(list(view).c[1].p.title, "Session: Renamed task", 1, true), "Icon glyphs must not reach row text")
 definition.event(state, { ev = "select", id = "main.directory.agents", item = "main.directory.agents.p200" }, blockCx)
 assert(state.selected == 200)
@@ -219,8 +223,9 @@ assert(subs[1].elapsed_ms == 95000 and subs[2].elapsed_ms == 103483, "Running su
 view = definition.view(state, blockCx)
 local rows = list(view).c
 assert(#rows == 3 and rows[2].p.role == "factory-subagent" and rows[3].p.role == "factory-subagent")
-assert(rows[2].p.label[2].t == "Alpha" and rows[2].p.label[3].t == "bash · Running tests", "Show the running tool")
-assert(rows[3].p.label[3].t == "No activity yet" and rows[3].p.detail[2].t == "Done")
+assert(rows[2].p.label[2].t == "Alpha" and rows[2].p.label[4].t == "bash · Running tests", "Show the running tool")
+assert(rows[2].p.label[3].t == "src/" and rows[2].p.label[3].s == "muted", "Subagents show their agent's path, muted")
+assert(rows[3].p.label[4].t == "No activity yet" and rows[3].p.detail[2].t == "Done")
 assert(string.find(rows[1].p.detail[3].t, "1 subagent", 1, true), "The agent row counts running subagents")
 key("down")
 assert(state.selected == 200 and state.sub == "43_Alpha", "Subagent rows are selectable")
@@ -243,6 +248,52 @@ assert(#state.agents[1].subagents == 0, "Only omp surfaces are read for subagent
 cx.session.surface = function() error("Surface unavailable") end
 tick(cx)
 assert(#state.agents == 1 and #warnings == 0, "A surface error must not break discovery")
+
+-- Path: the directory of the newest file the agent changed, kept after it leaves the transcript window.
+local changes = { { role = "assistant", text = "", tools = {
+	{ name = "write", status = "done", targetKind = "path", target = "docs/a.md", href = "file:///code/backend/docs/a.md" },
+	{ name = "edit", status = "done", targetKind = "path", target = "../shared/x.lua:3" },
+	{ name = "edit", status = "error", targetKind = "path", target = "broken/y.lua" },
+	{ name = "write", status = "done", targetKind = "text", target = "query=\"notes\"" },
+	{ name = "read", status = "done", targetKind = "path", target = "other/z.lua", href = "file:///code/backend/other/z.lua" },
+} } }
+cx.agents.transcript = function() return changes end
+tick(cx)
+assert(state.agents[1].path == "/code/shared/",
+	"The newest successful file change wins; reads, failed edits and non-file writes do not count")
+changes = { { role = "assistant", text = "", tools = {
+	{ name = "edit", status = "done", targetKind = "path", target = "n.md:1", href = "file:///Users/test/My%20notes/n.md" },
+} } }
+tick(cx)
+assert(state.agents[1].path == "~/My notes/" and state.agents[1].work_dir == "/Users/test/My notes",
+	"A path outside the cwd is shown from home")
+changes = { { role = "assistant", text = "", tools = { { name = "write", status = "done", targetKind = "path",
+	target = "tern-software-factory/tests/fixtures/deep/case.luau" } } } }
+tick(cx)
+local deep = list(definition.view(state, blockCx)).c[1].p
+assert(state.agents[1].path == "tern-software-factory/tests/fixtures/deep/" and deep.label[3].t == "…/tests/fixtures/deep/"
+	and string.find(deep.title, "Path: /code/backend/tern-software-factory/tests/fixtures/deep", 1, true),
+	"A long path keeps its end in the row and appears in full in the tooltip")
+changes = { { role = "assistant", text = "", tools = { { name = "ast_edit", status = "done", targetKind = "path", target = "lib/**/*.luau" } } } }
+tick(cx)
+assert(state.agents[1].path == "lib/", "A glob names its fixed directory")
+changes = {}
+for i = 1, 12 do table.insert(changes, { role = if i % 2 == 1 then "user" else "assistant", text = "Step " .. i, tools = {} }) end
+tick(cx)
+assert(state.agents[1].path == "lib/" and list(definition.view(state, blockCx)).c[1].p.label[3].t == "lib/",
+	"The path stays after the change scrolls out of the transcript window")
+-- A newly seen agent (or one seen again after a reload) looks further back once for its last change.
+table.insert(agents, { pane = 300, state = "idle", cwd = "/code/website" })
+cx.agents.transcript = function(_, pane, opts)
+	if pane == 300 and opts.last == 200 then
+		return { { role = "assistant", text = "", tools = { { name = "edit", status = "done", targetKind = "path", target = "site/index.html" } } } }
+	end
+	return if pane == 300 then { { role = "user", text = "Thanks", tools = {} } } else {}
+end
+tick(cx); tick(cx)
+assert(state.agents[2].pane == 300 and state.agents[2].path == "site/", "The path survives a reload")
+table.remove(agents, 2)
+cx.agents.transcript = function() return {} end
 
 -- Claude and Codex limits come from `omp usage --json`, at the bottom of the block.
 assert(#runs == 1 and table.concat(runs[1].argv, " ") == "omp usage --json", "One omp usage run at a time")
@@ -300,7 +351,7 @@ local argv = summaries[1].argv
 assert(argv[2] == "-p" and table.find(argv, "@smol") and table.find(argv, "--no-tools") and table.find(argv, "--no-session"),
 	"Summaries use the fast model without tools or a saved session")
 local prompt = argv[#argv]
-assert(string.find(prompt, "User asked: Fix the failure", 1, true) and string.find(prompt, "edit — parser.luau", 1, true)
+assert(string.find(prompt, "User asked: Fix the failure", 1, true) and string.find(prompt, "edit — src/parser.luau:12", 1, true)
 	and string.find(prompt, "bash: Run tests", 1, true), "The prompt lists the agent's recent steps")
 -- That run's agent left and came back since; its reply is dropped and the agent summarized afresh.
 local messages = {
@@ -315,7 +366,7 @@ assert(string.find(summaries[2].argv[#summaries[2].argv], "bash: Run tests (fail
 summaries[2].done({ status = 0, stdout = "\n\"Fixes the **parser** failure and reruns the tests.\"\nExtra line.", stderr = "", timed_out = false })
 tick(cx)
 assert(state.agents[1].task == "Fixes the parser failure and reruns the tests.", "Keep the first sentence, without quotes or markdown")
-assert(list(definition.view(state, blockCx)).c[1].p.label[3].t == "Fixes the parser failure and reruns the tests.")
+assert(list(definition.view(state, blockCx)).c[1].p.label[4].t == "Fixes the parser failure and reruns the tests.")
 now += 200000
 tick(cx)
 assert(#summaries == 2, "No new activity, no new summary")
@@ -376,4 +427,4 @@ tick = nil
 callback(cx)
 assert(tick ~= nil and #warnings == 1, "A failed refresh must still schedule its successor")
 print("PASS: native discovery, host scope, cross-session navigation, selection, exits, empty and 250 agents")
-print("PASS: omp activity, subagents, Claude and Codex limits, completion, cache, null metadata, bounded Unicode text and stale detail replies")
+print("PASS: omp activity, working paths, subagents, Claude and Codex limits, completion, cache, null metadata, bounded Unicode text and stale detail replies")

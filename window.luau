@@ -13,8 +13,9 @@ local limits = require("./limits")
 local finished, details = {}, {}
 -- The latest `omp usage` result: data survives a failed refresh, with its error.
 local usage = { data = nil, error = nil, at = nil, attempted = nil, running = false }
--- Per pane: chat steps with the time each first appeared, and the latest summary.
-local logs, tasks = {}, {}
+-- Per pane: chat steps with the time each first appeared, the latest summary,
+-- and the directory of the newest file the agent changed.
+local logs, tasks, paths = {}, {}, {}
 local summarizing = false
 
 local function text(value, fallback)
@@ -60,10 +61,18 @@ local function usage_snapshot()
 	}
 end
 
--- Record chat steps the first time they appear; the window keeps no transcript.
-local function track(cx, pane)
+-- Record chat steps the first time they appear, and the directory of the newest
+-- changed file; the window keeps no transcript.
+local function track(cx, pane, cwd, home)
 	local ok, messages = pcall(function() return cx.agents:transcript(pane, { last = 12 }) end)
 	if not ok or type(messages) ~= "table" then return end
+	-- First sight (or after a reload): look further back once, so the path
+	-- does not fall back to the cwd just because the last edit is older.
+	if not logs[pane] and not paths[pane] then
+		local seeded, history = pcall(function() return cx.agents:transcript(pane, { last = 200 }) end)
+		if seeded and type(history) == "table" then paths[pane] = tracking.changed(history, cwd, home) end
+	end
+	paths[pane] = tracking.changed(messages, cwd, home) or paths[pane]
 	local log = logs[pane] or { seen = {}, entries = {} }
 	logs[pane] = log
 	for _, entry in tracking.activity(messages) do
@@ -146,16 +155,23 @@ local function publish(cx)
 	for _, session in cx.sessions:list() do sessions[session.id] = session.name end
 	for _, tab in cx.session:tabs() do tabs[tab.id] = sessions[tab.session] or "Session" end
 	local agents, seen = {}, {}
+	local home = tern.getenv("HOME")
 	for _, agent in cx.agents:list() do
 		local pane = panes[agent.pane]
 		if agent.state ~= "exited" and pane then
 			seen[agent.pane] = true
 			local last_turn = finished[agent.pane]
+			local cwd = text(agent.cwd)
+			track(cx, agent.pane, cwd, home)
+			-- Where the agent works: its newest change, else its cwd.
+			local work_dir = paths[agent.pane] or tracking.absolute(cwd, nil, home)
 			table.insert(agents, {
 				pane = agent.pane,
 				title = text(pane.title, text(agent.command, "Agent " .. string.format("%.0f", agent.pane))),
 				task = if tasks[agent.pane] then tasks[agent.pane].text else nil,
-				cwd = text(agent.cwd),
+				cwd = cwd,
+				work_dir = work_dir or "",
+				path = if work_dir then tracking.where(work_dir, cwd, home) else "",
 				model = text(agent.model),
 				delivery_error = text(agent.delivery_error),
 				preview = tracking.preview(agent.last_message),
@@ -165,12 +181,12 @@ local function publish(cx)
 				session = tabs[pane.tab] or "Session",
 				subagents = tern.json.array(tracking.subagents(cx, agent.pane)),
 			})
-			track(cx, agent.pane)
 		end
 	end
 	for id in details do if not seen[id] then details[id] = nil end end
 	for id in finished do if not seen[id] then finished[id] = nil end end
 	for id in logs do if not seen[id] then logs[id], tasks[id] = nil, nil end end
+	for id in paths do if not seen[id] then paths[id] = nil end end
 	refresh_tasks()
 	-- Pane order is stable while titles and agent states change.
 	table.sort(agents, function(a, b) return a.pane < b.pane end)

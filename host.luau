@@ -129,6 +129,30 @@ local function running_subagents(agent)
 	return count
 end
 
+-- Where an agent works, as sent by the window; "—" before its cwd is known.
+local function work_path(agent)
+	local path = plain(agent.path or "")
+	return if path ~= "" then path else "—"
+end
+
+-- The Path column fits about 24 monospace characters. Tern's text-overflow
+-- ellipsis cuts the end, so a longer path drops leading directories instead:
+-- `…/fixtures/deep/`. A single long directory name still ellipsizes.
+local PATH_CHARS = 24
+local function width(value) return utf8.len(value) or #value end
+local function path_tail(path)
+	if width(path) <= PATH_CHARS then return path end
+	local segments = {}
+	for segment in string.gmatch(path, "[^/]+") do table.insert(segments, segment) end
+	local kept = segments[#segments] .. "/"
+	for i = #segments - 1, 1, -1 do
+		local longer = segments[i] .. "/" .. kept
+		if width("…/" .. longer) > PATH_CHARS then break end
+		kept = longer
+	end
+	return "…/" .. kept
+end
+
 local function sub_row(agent, sub)
 	local status = sub_status(sub)
 	local kind = plain(sub.agent)
@@ -136,9 +160,10 @@ local function sub_row(agent, sub)
 	return ui.node("item", {
 		key = "p" .. string.format("%.0f", agent.pane) .. ".s" .. sub.key,
 		role = "factory-subagent",
+		-- The Path cell repeats the parent's path, muted, to keep columns aligned.
 		label = {
 			ui.span("↳ " .. (if kind ~= "" then kind else "subagent"), "muted"),
-			ui.span(name, "strong"), ui.span(doing, "muted"), ui.span(summary, "muted"),
+			ui.span(name, "strong"), ui.span(path_tail(work_path(agent)), "muted"), ui.span(doing, "muted"), ui.span(summary, "muted"),
 		},
 		detail = { ui.span("●", status.tone), ui.span(status.label, status.tone) },
 		tone = status.tone,
@@ -200,6 +225,8 @@ local function activity(state, agent)
 	local detail = state.details
 	local ready = detail and detail.pane == agent.pane and not detail.unavailable
 	local meta = { plain(agent.session), project_of(agent.cwd) }
+	local path = plain(agent.path or "")
+	if path ~= "" and path ~= "./" then table.insert(meta, path) end
 	if agent.model and agent.model ~= "" then table.insert(meta, short_model(agent.model)) end
 	if ready and detail.last_turn == "done" then table.insert(meta, "Turn completed " .. age(detail.finished_seconds)) end
 	local body = {}
@@ -266,19 +293,21 @@ tern.block.define("agents", {
 			local model = plain(agent.model or "")
 			if model == "" then model = "Model not reported" end
 			local cwd = plain(agent.cwd)
-			local path = if cwd ~= "" then cwd else "—"
-			local project = cwd:match("([^/\\]+)[/\\]*$") or path
+			local project = project_of(agent.cwd)
+			local path = work_path(agent)
+			local work_dir = plain(agent.work_dir or "")
 			-- Delivery errors replace the task; they need attention first.
 			local doing = if agent.delivery_error and agent.delivery_error ~= "" then plain(agent.delivery_error) else task
 			table.insert(rows, ui.node("item", {
 				key = "p" .. string.format("%.0f", agent.pane),
 				-- An untoned span renders as a bare text node, which cannot ellipsize.
-				label = { ui.span(session, "muted"), ui.span(project, "strong"), ui.span(doing, "task") },
+				label = { ui.span(session, "muted"), ui.span(project, "strong"), ui.span(path_tail(path), "dir"), ui.span(doing, "task") },
 				detail = { ui.span("●", status.tone), ui.span(status.label, status.tone), ui.span(note, "muted") },
 				tone = status.tone,
 				title = session .. "\n" .. project .. "\n" .. doing .. "\nSession: " .. title .. "\n" .. model
-					.. "\n" .. status.label .. " · " .. note .. "\n" .. cwd,
-				aria = session .. ", " .. project .. ", " .. doing .. ", " .. status.label .. ", " .. note .. ", " .. model,
+					.. "\n" .. status.label .. " · " .. note .. "\nPath: " .. (if work_dir ~= "" then work_dir else path)
+					.. "\nWorking directory: " .. cwd,
+				aria = session .. ", " .. project .. ", " .. path .. ", " .. doing .. ", " .. status.label .. ", " .. note .. ", " .. model,
 			}))
 			for _, sub in agent.subagents or {} do table.insert(rows, sub_row(agent, sub)) end
 		end
@@ -302,7 +331,7 @@ tern.block.define("agents", {
 				ui.node("col", { key = "directory", role = "factory-grid" }, {
 					ui.node("row", { role = "factory-columns" }, {
 						ui.node("row", { role = "factory-identifiers" }, {
-							ui.text("Tern session"), ui.text("Project"), ui.text("Agent task"),
+							ui.text("Tern session"), ui.text("Project"), ui.text("Path"), ui.text("Agent task"),
 						}),
 						ui.text("Status"),
 					}),
