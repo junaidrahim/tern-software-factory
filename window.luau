@@ -4,8 +4,9 @@
 local BLOCK = "tern-software-factory.agents"
 local REFRESH_MS, LIMITS_REFRESH_MS = 1000, 60000
 -- Tern disables a window timer until reload once one call runs past 50 ms,
--- which would stop every block. A timer call stops taking steps after this.
-local SLICE_MS = 20
+-- which would stop every block. A timer call stops taking steps after
+-- SLICE_MS; a single step that takes SLOW_MS is logged.
+local SLICE_MS, SLOW_MS = 20, 25
 -- Agent task: a one-sentence summary of the last few minutes of activity,
 -- refreshed at most once a minute per agent, and only after new activity.
 local TASK_WINDOW_MS, TASK_REFRESH_MS = 180000, 60000
@@ -19,14 +20,24 @@ local usage = { data = nil, error = nil, at = nil, attempted = nil, running = fa
 -- Per pane: chat steps with the time each first appeared, the latest summary,
 -- and the directory of the newest file the agent changed.
 local logs, tasks, paths = {}, {}, {}
--- Per pane: subagents of the agent's running task cards.
-local subagents = {}
+-- Per pane: subagents of the agent's running task cards, and the state and last
+-- message its latest transcript read covered.
+local subagents, signatures = {}, {}
 local summarizing = false
--- The current refresh: short steps, run in order across timer calls (see `refresh`).
+-- The current refresh: short named steps, run in order across timer calls (see `refresh`).
 local queue = {}
+
+local function step(name, run)
+	return { name = name, run = run }
+end
 
 local function text(value, fallback)
 	return if type(value) == "string" and value ~= "" then value else (fallback or "")
+end
+
+-- What an agent that is not working can change: its state and last message.
+local function signature(agent)
+	return text(agent.state) .. "\0" .. text(agent.last_message)
 end
 
 -- Prefer the omp that Tern installs; otherwise rely on PATH.
@@ -76,10 +87,11 @@ local function seed(cx, pane, cwd, home)
 end
 
 -- Record chat steps the first time they appear, and the directory of the newest
--- changed file; the window keeps no transcript.
-local function track(cx, pane, cwd, home)
+-- changed file; the window keeps no transcript. `covered` is the agent's signature at the read.
+local function track(cx, pane, cwd, home, covered)
 	local ok, messages = pcall(function() return cx.agents:transcript(pane, { last = 12 }) end)
 	if not ok or type(messages) ~= "table" then return end
+	signatures[pane] = covered
 	paths[pane] = tracking.changed(messages, cwd, home) or paths[pane]
 	local log = logs[pane] or { seen = {}, entries = {} }
 	logs[pane] = log
@@ -149,21 +161,42 @@ local function hosts_by_pane(cx)
 	return hosts
 end
 
--- An exited block keeps its pane but takes no events; it must not starve the
--- other blocks or fail the route (Tern would then hand the URL to macOS).
-local function send(cx, pane, event)
-	pcall(function() cx.session:event(pane, event) end)
+-- Tern's window API keeps only the low 44 bits of a pane id, and
+-- `cx.session:event` and `cx.session:pane` fail for a shortened id, so
+-- snapshots and details travel through `tern.kv`, keyed by those low 44 bits:
+-- the block's host half (which sees the full id) computes the same key with
+-- host.luau's `key`. Entries carry `seq` so a block applies each one once.
+-- Keys of the blocks this window has written entries for.
+local seq, written = 0, {}
+
+local function key(pane)
+	return string.format("%.0f", pane % 2^44)
+end
+
+local function write(kind, block_key, value)
+	seq += 1
+	value.seq = seq
+	tern.kv.set(kind .. ":" .. block_key, value)
+	written[block_key] = true
+end
+
+-- The open Software Factory block with this key.
+local function find_block(cx, block_key)
+	for _, pane in cx.session:panes() do
+		if is_factory(pane) and key(pane.pane) == block_key then return pane end
+	end
+	return nil
 end
 
 -- Sends one block the agents on its host.
-local function deliver(cx, block, agents, hosts, usage_now)
+local function deliver(block, agents, hosts, usage_now)
 	local rows = {}
 	for _, agent in agents do
 		if hosts[block.pane] ~= nil and hosts[agent.pane] == hosts[block.pane] then
 			table.insert(rows, agent)
 		end
 	end
-	send(cx, block.pane, { ev = "action", act = "factory_snapshot", agents = tern.json.array(rows), usage = usage_now })
+	write("snapshot", key(block.pane), { agents = tern.json.array(rows), usage = usage_now })
 end
 
 -- Discovery: find the blocks and live agents, then queue each agent's reads,
@@ -173,6 +206,16 @@ local function publish(cx)
 	for _, pane in cx.session:panes() do
 		panes[pane.pane] = pane
 		if is_factory(pane) then table.insert(blocks, pane) end
+	end
+	-- Entries of closed blocks leave the store, including blocks whose program exited.
+	local open = {}
+	for _, block in blocks do open[key(block.pane)] = true end
+	for block_key in written do
+		if not open[block_key] then
+			written[block_key] = nil
+			tern.kv.set("snapshot:" .. block_key, nil)
+			tern.kv.set("details:" .. block_key, nil)
+		end
 	end
 	-- omp runs only while a Software Factory block is open.
 	if #blocks == 0 then return end
@@ -195,15 +238,43 @@ local function publish(cx)
 	for id in logs do if not seen[id] then logs[id], tasks[id] = nil, nil end end
 	for id in paths do if not seen[id] then paths[id] = nil end end
 	for id in subagents do if not seen[id] then subagents[id] = nil end end
+	for id in signatures do if not seen[id] then signatures[id] = nil end end
 	for _, entry in live do
-		local id, cwd = entry.agent.pane, text(entry.agent.cwd)
-		if not logs[id] and not paths[id] then
-			table.insert(queue, function(step_cx) seed(step_cx, id, cwd, home) end)
+		local agent = entry.agent
+		local id, cwd, label = agent.pane, text(agent.cwd), string.format("%.0f", agent.pane)
+		-- An agent that is not working changes nothing until its state or last message does.
+		local current = signature(agent)
+		if agent.state == "working" or signatures[id] ~= current then
+			if not logs[id] and not paths[id] then
+				table.insert(queue, step("seed " .. label, function(step_cx) seed(step_cx, id, cwd, home) end))
+			end
+			table.insert(queue, step("transcript " .. label, function(step_cx) track(step_cx, id, cwd, home, current) end))
 		end
-		table.insert(queue, function(step_cx) track(step_cx, id, cwd, home) end)
-		table.insert(queue, function(step_cx) subagents[id] = tracking.subagents(step_cx, id) end)
+		-- Subagents run only during a turn. Each running task card is its own step,
+		-- taken next; the last one replaces the agent's subagents.
+		if agent.state == "working" then
+			table.insert(queue, step("subagents " .. label, function(step_cx)
+				local cards = tracking.task_cards(step_cx, id)
+				if not cards or #cards == 0 then
+					subagents[id] = nil
+					return
+				end
+				local found, steps = {}, {}
+				for _, card in cards do
+					table.insert(steps, step("task card " .. label .. "/" .. card.id, function(card_cx)
+						for _, sub in tracking.card_agents(card_cx, id, card) do table.insert(found, sub) end
+					end))
+				end
+				table.insert(steps, step("subagents " .. label .. " sorted", function()
+					subagents[id] = tracking.sort_subagents(found)
+				end))
+				for i, next_step in steps do table.insert(queue, i, next_step) end
+			end))
+		else
+			subagents[id] = nil
+		end
 	end
-	table.insert(queue, function()
+	table.insert(queue, step("snapshot", function()
 		refresh_tasks()
 		local agents = {}
 		for _, entry in live do
@@ -232,9 +303,11 @@ local function publish(cx)
 		-- Pane order is stable while titles and agent states change.
 		table.sort(agents, function(a, b) return a.pane < b.pane end)
 		for _, block in blocks do
-			table.insert(queue, function(step_cx) deliver(step_cx, block, agents, hosts, limits_snapshot) end)
+			table.insert(queue, step("deliver " .. string.format("%.0f", block.pane), function()
+				deliver(block, agents, hosts, limits_snapshot)
+			end))
 		end
-	end)
+	end))
 end
 
 tern.on("agent_finished", function(event)
@@ -246,25 +319,30 @@ tern.on("agent_finished", function(event)
 	details[event.pane] = nil
 end)
 
+-- Links name the block they come from: Tern reports the focused pane, not the
+-- block, as a link's pane when the block opens it.
 tern.route.link(function(request, cx)
-	local action, id = string.match(request.url, "^tern%-software%-factory://([a-z]+)/(%d+)$")
+	local action, block_key, id = string.match(request.url, "^tern%-software%-factory://([a-z]+)/(%d+)/(%d+)$")
 	if not id or (action ~= "pane" and action ~= "inspect") then return nil end
-	local source = if request.pane then cx.session:pane(request.pane) else nil
-	if not source or not is_factory(source) then return { handled = true } end
+	local block = find_block(cx, block_key)
+	if not block then return { handled = true } end
 	local target = tonumber(id)
 	local hosts = hosts_by_pane(cx)
-	if hosts[request.pane] ~= nil and hosts[target] == hosts[request.pane] then
+	if hosts[block.pane] ~= nil and hosts[target] == hosts[block.pane] then
 		for _, agent in cx.agents:list() do
 			if agent.pane == target and agent.state ~= "exited" then
 				if action == "pane" then
 					cx.layout:focus(target)
 				else
-					local cached, now = details[target], tern.now()
-					if not cached or now - cached.at >= 1000 then
-						cached = { at = now, value = tracking.read(cx, agent, finished[target]) }
+					-- The panel of an agent that is not working changes with its state or last message.
+					local cached, now, current = details[target], tern.now(), signature(agent)
+					if not cached or cached.signature ~= current or (agent.state == "working" and now - cached.at >= 1000) then
+						cached = { at = now, signature = current, value = tracking.read(cx, agent, finished[target]) }
 						details[target] = cached
 					end
-					send(cx, request.pane, { ev = "action", act = "factory_details", details = cached.value })
+					local last_turn = finished[target]
+					if last_turn then cached.value.finished_seconds = math.max(0, math.floor((now - last_turn.at) / 1000)) end
+					write("details", block_key, { details = cached.value })
 				end
 				return { handled = true }
 			end
@@ -275,19 +353,24 @@ tern.route.link(function(request, cx)
 		-- The next refresh drops its row.
 		cx:toast("info", "This agent is no longer running")
 	else
-		send(cx, request.pane, { ev = "action", act = "factory_details", details = { pane = target, unavailable = true } })
+		write("details", block_key, { details = { pane = target, unavailable = true } })
 	end
 	return { handled = true }
 end)
 
 -- Each timer call takes steps until SLICE_MS has passed and continues in the
--- next call; a new refresh starts REFRESH_MS after the last step.
+-- next call; a new refresh starts REFRESH_MS after the last step. A step that
+-- alone nears Tern's budget is logged by name.
 local function refresh(cx)
-	if #queue == 0 then queue = { publish } end
+	if #queue == 0 then queue = { step("discovery", publish) } end
 	local start = tern.now()
 	repeat
-		local ok, err = pcall(table.remove(queue, 1), cx)
-		if not ok then tern.log.warn("Cannot refresh agents:", err) end
+		local next_step = table.remove(queue, 1)
+		local began = tern.now()
+		local ok, err = pcall(next_step.run, cx)
+		local took = tern.now() - began
+		if not ok then tern.log.warn("Cannot refresh agents:", next_step.name, err) end
+		if took >= SLOW_MS then tern.log.warn(string.format("Slow refresh step: %s took %.0f ms", next_step.name, took)) end
 	until #queue == 0 or tern.now() - start >= SLICE_MS
 	-- Always reschedule, including after a transient host disconnect.
 	tern.timer(if #queue > 0 then 0 else REFRESH_MS, refresh)

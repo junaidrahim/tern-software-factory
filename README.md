@@ -17,7 +17,9 @@ Open the Tern command palette. Select **New Software Factory block**.
 The list updates each second. It shows agents from all sessions on the block's
 host. The columns are **Tern session**, **Project**, **Path**, **Agent task**,
 and **Status**. Scroll horizontally in narrow panes. Working, waiting, and idle
-agents stay in the list. Exited agents leave the list.
+agents stay in the list. Exited agents leave the list. The plugin reads a
+working agent's chat and subagents each second; a waiting or idle agent's chat
+only when its state or latest message changes.
 
 Each agent is one compact line. **Project** is the name of the agent's working
 directory. **Path** is the directory of the file the agent changed most
@@ -79,9 +81,10 @@ completed turn, and session title, then the latest assistant response from
 omp's structured chat. A failed turn or prompt delivery error appears above the
 response.
 
-The panel updates each second for the selected agent. It reads at most 32 recent
-messages and limits text length. Long responses scroll inside the panel. If a
-native agent has no structured chat, the panel shows its latest pane update.
+The panel updates each second while the selected agent works, and otherwise when
+its state or latest message changes. It reads at most 32 recent messages and
+limits text length. Long responses scroll inside the panel. If a native agent
+has no structured chat, the panel shows its latest pane update.
 
 ### Limits
 
@@ -103,13 +106,25 @@ The desktop window half must be loaded to update the list and open panes.
 
 ## Develop
 
-Tested with Tern 0.8.3.
+Tested with Tern 0.9.0.
 
 After you edit the plugin, run:
 
 ```sh
 tern plugin reload
 ```
+
+Tern stops a plugin's window timer until reload once one call runs past 50 ms,
+which stops every block from updating. The plugin splits each refresh into
+short steps across timer calls. A step that alone takes 25 ms or more is logged
+as `Slow refresh step: <step> took <n> ms` in `~/Library/Logs/Tern/tern.log`.
+
+The window half sends each block its agent list and details through the
+plugin's key/value store (`snapshot:<id>` and `details:<id>` in the plugin data
+directory's `kv.json`), and the block reads them each second. Tern's window API
+keeps only the low 44 bits of a pane id, and `cx.session:event` fails for a
+shortened id, so `<id>` is the block's pane id modulo 2^44. Entries leave the
+store when their block closes.
 
 To generate the API definitions for your installed Tern version, run:
 

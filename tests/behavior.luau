@@ -1,8 +1,16 @@
-local definition, route, tick, tickDelay, focused, opened, notice
+local definition, route, tick, windowTick, hostTick, tickDelay, focused, opened, notice, panes, cx
 local warnings, events = {}, {}
 local now = 1000
 -- omp runs (usage reports and task summaries): each holds its argv and the callback that delivers its result.
 local runs, summaries, decoded, files = {}, {}, {}, {}
+-- `tern.kv` stores JSON, so values are copies.
+local store = {}
+local function copy(value)
+	if type(value) ~= "table" then return value end
+	local result = {}
+	for k, v in value do result[k] = copy(v) end
+	return result
+end
 local function node(kind, props, children) return { k = kind, p = props or {}, c = children } end
 local tern = {
 	now = function() return now end,
@@ -27,8 +35,10 @@ local tern = {
 	end },
 	block = { define = function(_, value) definition = value end },
 	route = { link = function(value) route = value end },
-	timer = function(ms, callback) tick, tickDelay = callback, ms end,
+	timer = function(ms, callback) windowTick, tickDelay = callback, ms end,
 	log = { warn = function(...) table.insert(warnings, {...}) end, debug = function() end },
+	kv = { get = function(key) return copy(store[key]) end, set = function(key, value) store[key] = copy(value) end },
+	pane = { list = function() return panes end },
 }
 local tracking = (function()
 -- TRACKING_SOURCE
@@ -38,6 +48,7 @@ local limits = (function()
 end)()
 local require = function(path) return if path == "./limits" then limits else tracking end
 do
+local tern = setmetatable({ timer = function(_, callback) hostTick = callback end }, { __index = tern })
 -- HOST_SOURCE
 end
 do
@@ -50,26 +61,22 @@ local idleAgent = { pane = 300, title = "", tab = 10 }
 local remoteAgent = { pane = 400, title = "Remote task", tab = 30 }
 local exitedAgent = { pane = 500, title = "Finished", tab = 20 }
 local shell = { pane = 600, kind = "terminal", program = "codex", title = "Shell agent", tab = 10 }
-local panes = { block, localAgent, idleAgent, remoteAgent, exitedAgent, shell }
+panes = { block, localAgent, idleAgent, remoteAgent, exitedAgent, shell }
 local agents = {
 	{ pane = 400, state = "working", cwd = "/remote" },
 	{ pane = 300, state = "idle", cwd = "/code/website", command = "omp" },
 	{ pane = 500, state = "exited", cwd = "/code" },
 	{ pane = 200, state = "waiting_input", cwd = "/code/backend", model = "Test model", delivery_error = "Prompt could not be sent" },
 }
-local blockCx = { pane = 100, rows = 30, open = function(_, url) opened = url end }
+local function blockContext(pane, onOpen)
+	return { pane = pane, rows = 30, render = function() end, open = function(_, url) onOpen(url) end }
+end
+local blockCx = blockContext(100, function(url) opened = url end)
 local state = definition.init(blockCx)
-local cx = {
+cx = {
 	session = {
 		panes = function() return panes end,
-		pane = function(_, id)
-			for _, pane in panes do if pane.pane == id then return pane end end
-		end,
 		tabs = function() return { { id = 10, session = 1 }, { id = 20, session = 2 }, { id = 30, session = 3 } } end,
-		event = function(_, pane, event)
-			assert(pane == 100)
-			definition.event(state, event, blockCx)
-		end,
 	},
 	sessions = { list = function() return { { id = 1, name = "Main" }, { id = 2, name = "Backend" }, { id = 3, name = "Remote" } } end },
 	hosts = { list = function() return { { id = 1, panes = { 100, 200, 300, 500, 600 } }, { id = 2, panes = { 400 } } } end },
@@ -90,8 +97,17 @@ local cx = {
 	layout = { focus = function(_, pane) focused = pane end },
 	toast = function(_, _, message) notice = message end,
 }
+-- One refresh: the window half's timer call, then the host half's poll.
+tick = function(c)
+	local window = windowTick
+	window(c)
+	local host = hostTick
+	host()
+end
 local function key(name) definition.key(state, { name = name }, blockCx) end
-local function open_route() route({ pane = 100, url = opened }, cx) end
+-- Tern reports the focused pane, not the block, as the pane of a block's link. Details
+-- arrive at the host's next poll.
+local function open_route() route({ pane = 200, url = opened }, cx); hostTick() end
 
 assert(not state.loaded)
 assert(definition.key(state, { name = "enter" }, blockCx) == false)
@@ -135,10 +151,10 @@ assert(focused == nil and notice, "An exited selection must never focus a stale 
 tick(cx)
 assert(#state.agents == 1 and state.selected == 200)
 assert(route({ pane = 100, url = "https://example.com" }, cx) == nil)
-route({ pane = 100, url = "tern-software-factory://pane/400" }, cx)
+route({ pane = 100, url = "tern-software-factory://pane/100/400" }, cx)
 assert(focused == nil, "Navigation must stay on the block's host")
-route({ pane = 200, url = "tern-software-factory://pane/300" }, cx)
-assert(focused == nil, "Other panes cannot invoke this block's route")
+route({ pane = 100, url = "tern-software-factory://pane/999/300" }, cx)
+assert(focused == nil, "A link must name an open Software Factory block")
 agents = {}
 tick(cx)
 assert(state.loaded and #state.agents == 0 and state.selected == nil)
@@ -156,7 +172,7 @@ assert(state.agents[1].model == "Test model")
 definition.view(state, blockCx)
 local old = state.details
 -- A delayed reply for a previous selection must not overwrite its new detail.
-definition.event(state, { ev = "action", act = "factory_details", details = {pane = 999} }, blockCx)
+route({ pane = 100, url = "tern-software-factory://inspect/100/300" }, cx); hostTick()
 assert(state.details == old)
 events.agent_finished({pane = 200, result = "failed"}, cx)
 now = 6000
@@ -195,9 +211,9 @@ localAgent.kind = "agent"
 agents[1].command = null
 tick(cx)
 assert(#state.agents == 1 and state.agents[1].pane == 200, "Native discovery includes omp launched in a shell")
-route({pane = 100, url = "tern-software-factory://pane/600"}, cx)
+route({pane = 100, url = "tern-software-factory://pane/100/600"}, cx)
 assert(focused == nil, "Ordinary shell agents must not be included or navigable")
-assert(route({url = "tern-software-factory://inspect/200"}, cx).handled)
+assert(route({url = "tern-software-factory://inspect/100/200"}, cx).handled)
 cx.agents.transcript = function() return {} end
 
 -- Subagents of running omp task cards appear as compact rows under their agent.
@@ -391,29 +407,24 @@ summaries[4].done({ status = 0, stdout = "Deploys the parser fix.", stderr = "",
 tick(cx)
 assert(state.agents[1].task == "Deploys the parser fix.")
 cx.agents.transcript = function() return {} end
--- An exited Software Factory block must not stop updates to a live one.
+-- A Software Factory block whose program exited must not stop updates to a live one.
 table.insert(panes, 1, { pane = 700, kind = "plugin", block = "tern-software-factory.agents", tab = 10 })
-local sendEvent = cx.session.event
-cx.session.event = function(self, pane, event)
-	if pane == 700 then error("no program runs in that pane") end
-	sendEvent(self, pane, event)
-end
 agents[1].state = "idle"
 tick(cx)
 assert(state.agents[1].state == "idle" and #warnings == 0, "Live blocks still update beside an exited one")
 table.remove(panes, 1)
-cx.session.event = sendEvent
 -- Tern disables a window timer until reload once one call runs past 50 ms, which froze
 -- every open block. Slow reads spread over timer calls, and each block gets its snapshot.
+-- Tern's window API also shortens pane ids above 2^44: the window sees this block as 800,
+-- while the block's real id (its host cx.pane) is 2^44 + 800.
 local second = { pane = 800, kind = "plugin", block = "tern-software-factory.agents", tab = 10 }
-local secondCx = { pane = 800, rows = 30, open = function() end }
+local secondCx = blockContext(2^44 + 800, function() end)
 local secondState = definition.init(secondCx)
 table.insert(panes, second)
+local listPanes = tern.pane.list
+tern.pane.list = function() return { block, { pane = 2^44 + 800 } } end
 local listHosts, readSurface = cx.hosts.list, cx.session.surface
 cx.hosts.list = function() return { { id = 1, panes = { 100, 200, 300, 500, 600, 800 } }, { id = 2, panes = { 400 } } } end
-cx.session.event = function(self, pane, event)
-	if pane == 800 then definition.event(secondState, event, secondCx) else sendEvent(self, pane, event) end
-end
 cx.agents.transcript = function() now += 30; return {} end
 cx.session.surface = function() now += 30; error("Surface unavailable") end
 agents[1].state = "working"
@@ -425,9 +436,45 @@ repeat
 	assert(now - started < 50, "No timer call may run past Tern's 50 ms budget")
 until tickDelay == 1000
 assert(calls > 1 and state.agents[1].state == "working" and secondState.agents[1].state == "working",
-	"Every open block refreshes")
+	"Every open block refreshes, including one whose id Tern shortens")
+local slow = {}
+for _, warning in warnings do slow[warning[1]] = true end
+assert(slow["Slow refresh step: transcript 200 took 30 ms"] and slow["Slow refresh step: subagents 200 took 30 ms"],
+	"A step that nears the budget is logged by name")
+table.clear(warnings)
+assert(store["snapshot:800"] ~= nil, "A block's entries are keyed by the low 44 bits of its id")
+-- A closed block's entries leave the store, and so do those of a block whose program exited.
 table.remove(panes)
-cx.hosts.list, cx.session.surface, cx.session.event = listHosts, readSurface, sendEvent
+tern.pane.list = listPanes
+cx.agents.transcript, cx.session.surface = function() return {} end, readSurface
+tick(cx)
+assert(store["snapshot:800"] == nil and store["snapshot:700"] == nil and store["snapshot:100"] ~= nil,
+	"Only open blocks keep entries")
+cx.hosts.list = listHosts
+
+-- Reads follow change: an agent that is not working is read again only when its state or
+-- last message changes, and only working agents have their subagents read.
+local reads, surfaces = 0, 0
+cx.agents.transcript = function() reads += 1; return {} end
+cx.session.surface = function() surfaces += 1; return { surface = { role = "omp.session" }, main = { id = "main", c = {} } } end
+agents[1].state, agents[1].last_message = "idle", "Done."
+tick(cx)
+assert(reads == 1 and surfaces == 0, "A changed idle agent is read once, without its subagents")
+tick(cx); tick(cx)
+assert(reads == 1, "An unchanged idle agent is not read again")
+open_route()
+local panelAge = state.details.finished_seconds
+now += 5000
+open_route()
+assert(reads == 2 and state.details.finished_seconds == panelAge + 5,
+	"An idle agent's panel is read once until it changes, and its turn age still advances")
+agents[1].last_message = "Done again."
+tick(cx)
+assert(reads == 3, "A new last message is read")
+agents[1].state = "working"
+tick(cx); tick(cx)
+assert(reads == 5 and surfaces == 2, "A working agent is read every refresh")
+cx.session.surface = readSurface
 cx.agents.transcript = function() return {} end
 
 -- Large lists retain every row and use stable, exact ids above 32 bits.
@@ -449,9 +496,9 @@ assert(focused == 8589934842)
 key("home"); key("page_down")
 assert(state.selected == 8589934603)
 cx.agents.list = function() error("Host disconnected") end
-local callback = tick
-tick = nil
+local callback = windowTick
+windowTick = nil
 callback(cx)
-assert(tick ~= nil and #warnings == 1, "A failed refresh must still schedule its successor")
+assert(windowTick ~= nil and #warnings == 1, "A failed refresh must still schedule its successor")
 print("PASS: native discovery, host scope, cross-session navigation, selection, exits, empty and 250 agents")
 print("PASS: omp activity, working paths, subagents, Claude and Codex limits, completion, cache, null metadata, bounded Unicode text and stale detail replies")

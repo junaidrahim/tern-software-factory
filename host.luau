@@ -1,8 +1,16 @@
 --!nonstrict
--- The window half supplies agent snapshots and handles pane navigation.
+-- The window half supplies agent snapshots and details through `tern.kv`
+-- (see window.luau) and handles pane navigation.
 local ui = tern.ui
 local limits = require("./limits")
 local LIST = "main.directory.agents"
+local REFRESH_MS = 1000
+
+-- A block's key in `tern.kv` and in links: its pane id's low 44 bits, the part
+-- Tern's window API keeps (see window.luau's `key`).
+local function key(pane)
+	return string.format("%.0f", pane % 2^44)
+end
 local statuses = {
 	working = { label = "Working", tone = "accent" },
 	waiting_input = { label = "Waiting for you", tone = "warning" },
@@ -37,16 +45,18 @@ local function select_entry(state, entry)
 	state.sub = if entry and entry.sub then entry.sub.key else nil
 end
 
+-- Tern reports the focused pane, not the block, as a link's pane, so links
+-- name the block.
 local function open_selected(state, cx)
 	if state.selected then
-		cx:open("tern-software-factory://pane/" .. string.format("%.0f", state.selected))
+		cx:open("tern-software-factory://pane/" .. key(cx.pane) .. "/" .. string.format("%.0f", state.selected))
 	end
 end
 
 local function inspect_selected(state, cx)
 	if state.details and state.details.pane ~= state.selected then state.details = nil end
 	if state.selected then
-		cx:open("tern-software-factory://inspect/" .. string.format("%.0f", state.selected))
+		cx:open("tern-software-factory://inspect/" .. key(cx.pane) .. "/" .. string.format("%.0f", state.selected))
 	end
 end
 
@@ -271,9 +281,65 @@ local function sub_activity(agent, sub)
 	return panel(plain(sub.name), sub_status(sub), meta, body)
 end
 
+local function apply_snapshot(state, data, cx)
+	local previous = selected_index(entries(state), state)
+	state.agents = data.agents or {}
+	state.usage = data.usage
+	state.loaded = true
+	local list = entries(state)
+	local agent_found, entry_found = false, false
+	for _, entry in list do
+		if entry.agent.pane == state.selected then
+			agent_found = true
+			if (entry.sub and entry.sub.key) == state.sub then entry_found = true end
+		end
+	end
+	-- A finished task drops its subagents; keep the selection on their agent.
+	if not agent_found then
+		select_entry(state, list[math.min(previous, #list)])
+	elseif not entry_found then
+		state.sub = nil
+	end
+	inspect_selected(state, cx)
+end
+
+-- Per open block: its state and cx, and the `seq` of the snapshot and details it applied.
+local blocks = {}
+
+local function poll()
+	local open = {}
+	for _, pane in tern.pane.list() do open[pane.pane] = true end
+	for pane, block in blocks do
+		local id = key(pane)
+		if not open[pane] then
+			blocks[pane] = nil
+			pcall(tern.kv.set, "snapshot:" .. id, nil)
+			pcall(tern.kv.set, "details:" .. id, nil)
+			continue
+		end
+		local ok, snapshot, details = pcall(function() return tern.kv.get("snapshot:" .. id), tern.kv.get("details:" .. id) end)
+		local changed = false
+		if ok and type(snapshot) == "table" and snapshot.seq ~= block.snapshot then
+			block.snapshot, changed = snapshot.seq, true
+			apply_snapshot(block.state, snapshot, block.cx)
+		end
+		if ok and type(details) == "table" and details.seq ~= block.details then
+			block.details = details.seq
+			-- A late reply for a previous selection must not replace the current one.
+			if type(details.details) == "table" and details.details.pane == block.state.selected then
+				block.state.details, changed = details.details, true
+			end
+		end
+		if changed then pcall(function() block.cx:render() end) end
+	end
+	tern.timer(REFRESH_MS, poll)
+end
+
 tern.block.define("agents", {
-	init = function()
-		return { agents = {}, selected = nil, loaded = false }
+	init = function(cx)
+		local state = { agents = {}, selected = nil, loaded = false }
+		blocks[cx.pane] = { state = state, cx = cx }
+		return state
 	end,
 	title = function() return "Software Factory" end,
 	view = function(state, cx)
@@ -372,29 +438,7 @@ tern.block.define("agents", {
 		return true
 	end,
 	event = function(state, event, cx)
-		if event.ev == "action" and event.act == "factory_snapshot" then
-			local previous = selected_index(entries(state), state)
-			state.agents = event.agents or {}
-			state.usage = event.usage
-			state.loaded = true
-			local list = entries(state)
-			local agent_found, entry_found = false, false
-			for _, entry in list do
-				if entry.agent.pane == state.selected then
-					agent_found = true
-					if (entry.sub and entry.sub.key) == state.sub then entry_found = true end
-				end
-			end
-			-- A finished task drops its subagents; keep the selection on their agent.
-			if not agent_found then
-				select_entry(state, list[math.min(previous, #list)])
-			elseif not entry_found then
-				state.sub = nil
-			end
-			inspect_selected(state, cx)
-		elseif event.ev == "action" and event.act == "factory_details" then
-			if event.details and event.details.pane == state.selected then state.details = event.details end
-		elseif (event.ev == "select" or event.ev == "activate") and event.id == LIST then
+		if (event.ev == "select" or event.ev == "activate") and event.id == LIST then
 			for _, entry in entries(state) do
 				if item_id(entry.agent.pane, entry.sub) == event.item then
 					select_entry(state, entry)
@@ -406,3 +450,5 @@ tern.block.define("agents", {
 		end
 	end,
 })
+
+tern.timer(REFRESH_MS, poll)

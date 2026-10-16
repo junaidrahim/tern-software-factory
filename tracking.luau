@@ -74,32 +74,44 @@ local function subagent(node, card_ms)
 end
 
 -- omp renders each task call as an `omp.tool.task` card with one `agent` node
--- per subagent. Read only running cards, one level deep, with node budgets.
-local function subagents(cx, pane)
-	local result = {}
+-- per subagent. Running cards of an omp session, each read separately with
+-- `card_agents`; nil when the pane shows no omp session.
+local function task_cards(cx, pane)
 	local ok, tree = pcall(function() return cx.session:surface(pane, { depth = 1, nodes = 5000, max_chars = 64 }) end)
 	if not ok or type(tree) ~= "table" or type(tree.surface) ~= "table" or tree.surface.role ~= "omp.session" then
-		return result
+		return nil
 	end
+	local cards = {}
 	for _, node in fields(fields(tree.main).c) do
 		local props = fields(node.p)
 		if props.role == "omp.tool.task" and props.status == "running" and type(node.id) == "string" then
-			local read, card = pcall(function()
-				return cx.session:surface(pane, { root = node.id, depth = 1, nodes = 256, max_chars = 1200 })
-			end)
-			for _, child in if read and type(card) == "table" then fields(fields(card.main).c) else {} do
-				if child.k == "agent" and type(child.id) == "string" and type(child.p) == "table" then
-					table.insert(result, subagent(child, number(props.age)))
-				end
-			end
+			table.insert(cards, { id = node.id, age = number(props.age) })
 		end
 	end
-	-- omp reorders agents within a card as they update; keep rows still.
-	table.sort(result, function(a, b)
+	return cards
+end
+
+-- The subagents of one running card, one level deep, with a node budget.
+local function card_agents(cx, pane, card)
+	local result = {}
+	local read, tree = pcall(function()
+		return cx.session:surface(pane, { root = card.id, depth = 1, nodes = 256, max_chars = 1200 })
+	end)
+	for _, child in if read and type(tree) == "table" then fields(fields(tree.main).c) else {} do
+		if child.k == "agent" and type(child.id) == "string" and type(child.p) == "table" then
+			table.insert(result, subagent(child, card.age))
+		end
+	end
+	return result
+end
+
+-- omp reorders agents within a card as they update; keep rows still.
+local function sort_subagents(list)
+	table.sort(list, function(a, b)
 		if a.name ~= b.name then return a.name < b.name end
 		return a.id < b.id
 	end)
-	return result
+	return list
 end
 
 local function squash(value, limit)
@@ -226,7 +238,7 @@ local function where(dir, cwd, home)
 end
 
 return {
-	read = read, preview = preview, subagents = subagents,
+	read = read, preview = preview, task_cards = task_cards, card_agents = card_agents, sort_subagents = sort_subagents,
 	activity = activity, digest = digest, sentence = sentence,
 	absolute = absolute, changed = changed, where = where,
 }
