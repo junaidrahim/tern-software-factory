@@ -1,4 +1,4 @@
-local definition, route, tick, focused, opened, notice
+local definition, route, tick, tickDelay, focused, opened, notice
 local warnings, events = {}, {}
 local now = 1000
 -- omp runs (usage reports and task summaries): each holds its argv and the callback that delivers its result.
@@ -27,7 +27,7 @@ local tern = {
 	end },
 	block = { define = function(_, value) definition = value end },
 	route = { link = function(value) route = value end },
-	timer = function(_, callback) tick = callback end,
+	timer = function(ms, callback) tick, tickDelay = callback, ms end,
 	log = { warn = function(...) table.insert(warnings, {...}) end, debug = function() end },
 }
 local tracking = (function()
@@ -132,6 +132,7 @@ agents[2].state = "exited"
 focused = nil
 key("enter"); open_route()
 assert(focused == nil and notice, "An exited selection must never focus a stale pane")
+tick(cx)
 assert(#state.agents == 1 and state.selected == 200)
 assert(route({ pane = 100, url = "https://example.com" }, cx) == nil)
 route({ pane = 100, url = "tern-software-factory://pane/400" }, cx)
@@ -402,6 +403,32 @@ tick(cx)
 assert(state.agents[1].state == "idle" and #warnings == 0, "Live blocks still update beside an exited one")
 table.remove(panes, 1)
 cx.session.event = sendEvent
+-- Tern disables a window timer until reload once one call runs past 50 ms, which froze
+-- every open block. Slow reads spread over timer calls, and each block gets its snapshot.
+local second = { pane = 800, kind = "plugin", block = "tern-software-factory.agents", tab = 10 }
+local secondCx = { pane = 800, rows = 30, open = function() end }
+local secondState = definition.init(secondCx)
+table.insert(panes, second)
+local listHosts, readSurface = cx.hosts.list, cx.session.surface
+cx.hosts.list = function() return { { id = 1, panes = { 100, 200, 300, 500, 600, 800 } }, { id = 2, panes = { 400 } } } end
+cx.session.event = function(self, pane, event)
+	if pane == 800 then definition.event(secondState, event, secondCx) else sendEvent(self, pane, event) end
+end
+cx.agents.transcript = function() now += 30; return {} end
+cx.session.surface = function() now += 30; error("Surface unavailable") end
+agents[1].state = "working"
+local calls = 0
+repeat
+	local started = now
+	tick(cx)
+	calls += 1
+	assert(now - started < 50, "No timer call may run past Tern's 50 ms budget")
+until tickDelay == 1000
+assert(calls > 1 and state.agents[1].state == "working" and secondState.agents[1].state == "working",
+	"Every open block refreshes")
+table.remove(panes)
+cx.hosts.list, cx.session.surface, cx.session.event = listHosts, readSurface, sendEvent
+cx.agents.transcript = function() return {} end
 
 -- Large lists retain every row and use stable, exact ids above 32 bits.
 agents, panes = {}, { block }
