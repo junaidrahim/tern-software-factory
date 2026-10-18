@@ -14,10 +14,9 @@
   line-height: 24px;
 }
 [data-role='factory-grid'] {
-  /* Label (Tern session, Project, Path, Agent task), then Status. The agent
-     task takes all remaining width. */
-  --factory-columns: minmax(560px, 1fr) 210px;
-  --factory-identity: 120px 130px 160px minmax(0, 1fr);
+  /* Status follows Tern session; the agent task takes remaining width. */
+  --factory-columns: 120px 210px 130px 160px minmax(0, 1fr);
+  --factory-identity: var(--factory-columns);
   gap: 0;
   min-width: 0;
   overflow-x: auto;
@@ -50,8 +49,26 @@
 [data-role='factory-identifiers'] {
   display: grid;
   grid-template-columns: var(--factory-identity);
-  column-gap: 10px;
+  column-gap: 12px;
   min-width: 0;
+}
+[data-role='factory-identifiers'],
+[data-role='factory-grid'] .sf-item-label {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+[data-role='factory-identifiers'] > :nth-child(1),
+[data-role='factory-grid'] .sf-item-label > span:nth-child(1) { grid-column: 1; }
+[data-role='factory-identifiers'] > :nth-child(2),
+[data-role='factory-grid'] .sf-item-label > span:nth-child(2) { grid-column: 3; }
+[data-role='factory-identifiers'] > :nth-child(3),
+[data-role='factory-grid'] .sf-item-label > span:nth-child(3) { grid-column: 4; }
+[data-role='factory-identifiers'] > :nth-child(4),
+[data-role='factory-grid'] .sf-item-label > span:nth-child(4) { grid-column: 5; }
+[data-role='factory-columns'] > :last-child,
+[data-role='factory-grid'] .sf-item-detail {
+  grid-column: 2;
+  grid-row: 1;
 }
 [data-role='factory-grid'] .sf-item {
   height: calc(var(--sf-lh) + 6px);
@@ -75,7 +92,7 @@
 [data-role='factory-grid'] .sf-item-label {
   display: grid;
   grid-template-columns: var(--factory-identity);
-  column-gap: 10px;
+  column-gap: 12px;
 }
 [data-role='factory-grid'] .sf-item-label > span,
 [data-role='factory-grid'] .sf-item-detail > span {
@@ -133,7 +150,10 @@
   background: color-mix(in srgb, var(--l1) 60%, transparent);
 }
 [data-role='factory-grid'] .sf-item[data-role='factory-subagent'] .sf-item-label {
-  grid-template-columns: 120px 130px 160px minmax(0, 1fr) minmax(0, 0.6fr);
+  grid-template-columns: 120px 210px 130px 160px minmax(0, 1fr) minmax(0, 0.6fr);
+}
+[data-role='factory-grid'] .sf-item[data-role='factory-subagent'] .sf-item-label > span:nth-child(5) {
+  grid-column: 6;
 }
 [data-role='factory-grid'] .sf-item[data-role='factory-subagent'] .sf-item-label > span:first-child {
   box-sizing: border-box;

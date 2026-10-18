@@ -15,8 +15,8 @@ Open the Tern command palette. Select **New Software Factory block**.
 ## Use
 
 The list updates each second. It shows agents from all sessions on the block's
-host. The columns are **Tern session**, **Project**, **Path**, **Agent task**,
-and **Status**. Scroll horizontally in narrow panes. Working, waiting, and idle
+host. The columns are **Tern session**, **Status**, **Project**, **Path**,
+and **Agent task**. Scroll horizontally in narrow panes. Working, waiting, and idle
 agents stay in the list. Exited agents leave the list. The plugin reads a
 working agent's chat and subagents each second; a waiting or idle agent's chat
 only when its state or latest message changes.
