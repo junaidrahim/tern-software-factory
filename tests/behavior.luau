@@ -3,6 +3,7 @@ local warnings, events = {}, {}
 local now = 1000
 -- omp runs (usage reports and task summaries): each holds its argv and the callback that delivers its result.
 local runs, summaries, decoded, files = {}, {}, {}, {}
+local gitRuns = {}
 -- `tern.kv` stores JSON, so values are copies.
 local store = {}
 local function copy(value)
@@ -31,6 +32,10 @@ local tern = {
 	getenv = function(name) return if name == "HOME" then "/Users/test" else nil end,
 	fs = { exists = function(path) return files[path] == true end },
 	process = { run = function(argv, opts, callback)
+		if argv[1] == "git" then
+			table.insert(gitRuns, { argv = argv, done = callback })
+			return
+		end
 		table.insert(if argv[2] == "usage" then runs else summaries, { argv = argv, opts = opts, done = callback })
 	end },
 	block = { define = function(_, value) definition = value end },
@@ -131,13 +136,20 @@ local function list(v) return v.main.c[3].c[2] end
 assert(#list(view).c == 2 and list(view).p.selected == "main.directory.agents.p300")
 assert(list(view).c[1].p.tone == "error", "Prompt delivery failures need an attention indicator")
 local first = list(view).c[1].p.label
-assert(#first == 4 and first[1].t == "Backend" and first[2].t == "backend" and first[4].t == "Prompt could not be sent",
-	"One compact line: Tern session, project, path, then the delivery error in place of the task")
-assert(first[3].t == "src/" and state.agents[1].work_dir == "/code/backend/src",
+assert(first[3].t == "Prompt could not be sent", "Delivery errors replace the task")
+assert(state.agents[1].work_dir == "/code/backend/src",
 	"A relative edit target resolves against the agent's cwd, without its line suffix")
-assert(list(view).c[2].p.label[3].t == "./" and state.agents[2].work_dir == "/code/website",
+assert(state.agents[2].work_dir == "/code/website",
 	"An agent that changed nothing works in its cwd")
-assert(list(view).c[2].p.label[4].t == "omp", "The session title stands in until a summary arrives")
+assert(list(view).c[2].p.label[3].t == "omp", "The session title stands in until a summary arrives")
+assert(first[2].t == "—", "An unresolved repository must not show the cwd's name")
+for _, run in gitRuns do
+	run.done({ status = if run.argv[3] == "/code/backend" then 0 else 128,
+		stdout = "/code/\n", timed_out = false })
+end
+view = definition.view(state, blockCx)
+assert(list(view).c[1].p.label[2].t == "code", "Project uses the repository root, not the cwd basename")
+assert(list(view).c[2].p.label[2].t == "—", "A directory outside Git has no project")
 assert(string.find(list(view).c[1].p.title, "Session: Renamed task", 1, true), "Icon glyphs must not reach row text")
 definition.event(state, { ev = "select", id = "main.directory.agents", item = "main.directory.agents.p200" }, blockCx)
 assert(state.selected == 200)
@@ -240,9 +252,8 @@ assert(subs[1].elapsed_ms == 95000 and subs[2].elapsed_ms == 103483, "Running su
 view = definition.view(state, blockCx)
 local rows = list(view).c
 assert(#rows == 3 and rows[2].p.role == "factory-subagent" and rows[3].p.role == "factory-subagent")
-assert(rows[2].p.label[2].t == "Alpha" and rows[2].p.label[4].t == "bash · Running tests", "Show the running tool")
-assert(rows[2].p.label[3].t == "src/" and rows[2].p.label[3].s == "muted", "Subagents show their agent's path, muted")
-assert(rows[3].p.label[4].t == "No activity yet" and rows[3].p.detail[2].t == "Done")
+assert(rows[2].p.label[2].t == "Alpha" and rows[2].p.label[3].t == "bash · Running tests", "Show the running tool")
+assert(rows[3].p.label[3].t == "No activity yet" and rows[3].p.detail[2].t == "Done")
 assert(string.find(rows[1].p.detail[3].t, "1 subagent", 1, true), "The agent row counts running subagents")
 key("down")
 assert(state.selected == 200 and state.sub == "43_Alpha", "Subagent rows are selectable")
@@ -288,16 +299,16 @@ changes = { { role = "assistant", text = "", tools = { { name = "write", status 
 	target = "tern-software-factory/tests/fixtures/deep/case.luau" } } } }
 tick(cx)
 local deep = list(definition.view(state, blockCx)).c[1].p
-assert(state.agents[1].path == "tern-software-factory/tests/fixtures/deep/" and deep.label[3].t == "…/tests/fixtures/deep/"
+assert(state.agents[1].path == "tern-software-factory/tests/fixtures/deep/"
 	and string.find(deep.title, "Path: /code/backend/tern-software-factory/tests/fixtures/deep", 1, true),
-	"A long path keeps its end in the row and appears in full in the tooltip")
+	"A long path appears in full in the tooltip")
 changes = { { role = "assistant", text = "", tools = { { name = "ast_edit", status = "done", targetKind = "path", target = "lib/**/*.luau" } } } }
 tick(cx)
 assert(state.agents[1].path == "lib/", "A glob names its fixed directory")
 changes = {}
 for i = 1, 12 do table.insert(changes, { role = if i % 2 == 1 then "user" else "assistant", text = "Step " .. i, tools = {} }) end
 tick(cx)
-assert(state.agents[1].path == "lib/" and list(definition.view(state, blockCx)).c[1].p.label[3].t == "lib/",
+assert(state.agents[1].path == "lib/",
 	"The path stays after the change scrolls out of the transcript window")
 -- A newly seen agent (or one seen again after a reload) looks further back once for its last change.
 table.insert(agents, { pane = 300, state = "idle", cwd = "/code/website" })
@@ -383,7 +394,6 @@ assert(string.find(summaries[2].argv[#summaries[2].argv], "bash: Run tests (fail
 summaries[2].done({ status = 0, stdout = "\n\"Fixes the **parser** failure and reruns the tests.\"\nExtra line.", stderr = "", timed_out = false })
 tick(cx)
 assert(state.agents[1].task == "Fixes the parser failure and reruns the tests.", "Keep the first sentence, without quotes or markdown")
-assert(list(definition.view(state, blockCx)).c[1].p.label[4].t == "Fixes the parser failure and reruns the tests.")
 now += 200000
 tick(cx)
 assert(#summaries == 2, "No new activity, no new summary")

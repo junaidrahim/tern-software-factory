@@ -15,23 +15,28 @@ Open the Tern command palette. Select **New Software Factory block**.
 ## Use
 
 The list updates each second. It shows agents from all sessions on the block's
-host. The columns are **Tern session**, **Status**, **Project**, **Path**,
+host. The columns are **Tern session**, **Status**, **Project**,
 and **Agent task**. Scroll horizontally in narrow panes. Working, waiting, and idle
 agents stay in the list. Exited agents leave the list. The plugin reads a
 working agent's chat and subagents each second; a waiting or idle agent's chat
 only when its state or latest message changes.
 
-Each agent is one compact line. **Project** is the name of the agent's working
-directory. **Path** is the directory of the file the agent changed most
-recently, read from omp's structured chat: the target of its latest successful
+Each agent is one compact line. **Project** is the basename of the Git repository
+root containing the agent's working directory, resolved with `git rev-parse
+--show-toplevel` on that host. Starting in a subdirectory still shows the repository
+name. Linked worktrees show their worktree root's name. Results refresh once a
+minute; unresolved directories and directories outside Git show `—`.
+
+The detail panel and row tooltip retain the directory of the file the agent changed
+most recently, read from omp's structured chat: the target of its latest non-error
 `edit`, `write`, or `ast_edit` call (omp's `file://` link when it has one, else
 the target resolved against the working directory). Reads, failed edits, MCP
 tool calls, and shell commands do not count. Paths inside the working directory
 are relative (`./` is the working directory itself, `src/lib/` a subdirectory);
-others start from `~` or `/`. Until the agent changes a file, Path shows `./`.
+others start from `~` or `/`. Until the agent changes a file, this path is `./`.
 The plugin remembers the latest path for each agent until the agent exits. When
 it first sees an agent, including after a reload, it looks back over the last 200
-chat messages for the newest change. A long path keeps its end: `…/tests/fixtures/`.
+chat messages for the newest change.
 
 **Agent task** is a one-sentence summary of what the agent did in the last three
 minutes; it shows the omp session title until the first summary arrives, and a
@@ -51,7 +56,7 @@ for the agent whose summary is oldest. Idle agents keep their last summary, and
 a failed summary keeps the previous one. Summaries reset when the plugin reloads.
 
 While an omp task runs, each of its subagents gets a compact line under the
-agent: the subagent type, name, the agent's path (muted), current tool or
+agent: the subagent type, name, current tool or
 assignment, status, model, tokens, and run time. The agent's status notes how
 many subagents are running.
 Select a subagent row to see its context use, cost, requests, tool count,

@@ -145,24 +145,6 @@ local function work_path(agent)
 	return if path ~= "" then path else "—"
 end
 
--- The Path column fits about 24 monospace characters. Tern's text-overflow
--- ellipsis cuts the end, so a longer path drops leading directories instead:
--- `…/fixtures/deep/`. A single long directory name still ellipsizes.
-local PATH_CHARS = 24
-local function width(value) return utf8.len(value) or #value end
-local function path_tail(path)
-	if width(path) <= PATH_CHARS then return path end
-	local segments = {}
-	for segment in string.gmatch(path, "[^/]+") do table.insert(segments, segment) end
-	local kept = segments[#segments] .. "/"
-	for i = #segments - 1, 1, -1 do
-		local longer = segments[i] .. "/" .. kept
-		if width("…/" .. longer) > PATH_CHARS then break end
-		kept = longer
-	end
-	return "…/" .. kept
-end
-
 local function sub_row(agent, sub)
 	local status = sub_status(sub)
 	local kind = plain(sub.agent)
@@ -170,10 +152,9 @@ local function sub_row(agent, sub)
 	return ui.node("item", {
 		key = "p" .. string.format("%.0f", agent.pane) .. ".s" .. sub.key,
 		role = "factory-subagent",
-		-- The Path cell repeats the parent's path, muted, to keep columns aligned.
 		label = {
 			ui.span("↳ " .. (if kind ~= "" then kind else "subagent"), "muted"),
-			ui.span(name, "strong"), ui.span(path_tail(work_path(agent)), "muted"), ui.span(doing, "muted"), ui.span(summary, "muted"),
+			ui.span(name, "strong"), ui.span(doing, "muted"), ui.span(summary, "muted"),
 		},
 		detail = { ui.span("●", status.tone), ui.span(status.label, status.tone) },
 		tone = status.tone,
@@ -205,9 +186,40 @@ local function row_status(agent)
 	return { label = status.label, tone = status.tone, note = note }
 end
 
-local function project_of(cwd)
-	local path = plain(cwd)
-	return path:match("([^/\\]+)[/\\]*$") or (if path ~= "" then path else "—")
+local function project_of(state, cwd)
+	local repo = state.projects[cwd]
+	return if repo and repo.name then plain(repo.name) else "—"
+end
+
+-- Resolve on the block's host, not the desktop, so remote paths stay remote.
+-- Cache per working directory and refresh once a minute without blocking polling.
+local function refresh_projects(state, cx)
+	local active = {}
+	for _, agent in state.agents do
+		local cwd = agent.cwd
+		if cwd == "" then continue end
+		active[cwd] = true
+		local repo = state.projects[cwd]
+		if repo and (repo.running or tern.now() - repo.at < 60000) then continue end
+		if not repo then
+			repo = {}
+			state.projects[cwd] = repo
+		end
+		repo.running, repo.at = true, tern.now()
+		local ok = pcall(function()
+			tern.process.run({ "git", "-C", cwd, "rev-parse", "--show-toplevel" }, { timeout_ms = 5000 }, function(result)
+				local root = if result.status == 0 and not result.timed_out
+					then string.gsub(result.stdout, "[\r\n]+$", "") else ""
+				repo.name = root:match("([^/]+)/*$")
+				repo.running = false
+				cx:render()
+			end)
+		end)
+		if not ok then repo.name, repo.running = nil, false end
+	end
+	for cwd in state.projects do
+		if not active[cwd] then state.projects[cwd] = nil end
+	end
 end
 
 -- Panels share one shape: heading and status, one muted line of context,
@@ -234,7 +246,7 @@ end
 local function activity(state, agent)
 	local detail = state.details
 	local ready = detail and detail.pane == agent.pane and not detail.unavailable
-	local meta = { plain(agent.session), project_of(agent.cwd) }
+	local meta = { plain(agent.session), project_of(state, agent.cwd) }
 	local path = plain(agent.path or "")
 	if path ~= "" and path ~= "./" then table.insert(meta, path) end
 	if agent.model and agent.model ~= "" then table.insert(meta, short_model(agent.model)) end
@@ -263,8 +275,8 @@ local function activity(state, agent)
 	return panel(agent_task(agent), row_status(agent), meta, body)
 end
 
-local function sub_activity(agent, sub)
-	local meta = { "Subagent of " .. project_of(agent.cwd) }
+local function sub_activity(state, agent, sub)
+	local meta = { "Subagent of " .. project_of(state, agent.cwd) }
 	if sub.agent ~= "" then table.insert(meta, sub.agent) end
 	if sub.model ~= "" then table.insert(meta, short_model(sub.model)) end
 	if sub.thinking ~= "" then table.insert(meta, (sub.thinking:gsub("^thinking", ""):lower()) .. " thinking") end
@@ -330,6 +342,7 @@ local function poll()
 				block.state.details, changed = details.details, true
 			end
 		end
+		refresh_projects(block.state, block.cx)
 		if changed then pcall(function() block.cx:render() end) end
 	end
 	tern.timer(REFRESH_MS, poll)
@@ -337,7 +350,7 @@ end
 
 tern.block.define("agents", {
 	init = function(cx)
-		local state = { agents = {}, selected = nil, loaded = false }
+		local state = { agents = {}, projects = {}, selected = nil, loaded = false }
 		blocks[cx.pane] = { state = state, cx = cx }
 		return state
 	end,
@@ -359,7 +372,7 @@ tern.block.define("agents", {
 			local model = plain(agent.model or "")
 			if model == "" then model = "Model not reported" end
 			local cwd = plain(agent.cwd)
-			local project = project_of(agent.cwd)
+			local project = project_of(state, agent.cwd)
 			local path = work_path(agent)
 			local work_dir = plain(agent.work_dir or "")
 			-- Delivery errors replace the task; they need attention first.
@@ -367,13 +380,13 @@ tern.block.define("agents", {
 			table.insert(rows, ui.node("item", {
 				key = "p" .. string.format("%.0f", agent.pane),
 				-- An untoned span renders as a bare text node, which cannot ellipsize.
-				label = { ui.span(session, "muted"), ui.span(project, "strong"), ui.span(path_tail(path), "dir"), ui.span(doing, "task") },
+				label = { ui.span(session, "muted"), ui.span(project, "strong"), ui.span(doing, "task") },
 				detail = { ui.span("●", status.tone), ui.span(status.label, status.tone), ui.span(note, "muted") },
 				tone = status.tone,
 				title = session .. "\n" .. project .. "\n" .. doing .. "\nSession: " .. title .. "\n" .. model
 					.. "\n" .. status.label .. " · " .. note .. "\nPath: " .. (if work_dir ~= "" then work_dir else path)
 					.. "\nWorking directory: " .. cwd,
-				aria = session .. ", " .. project .. ", " .. path .. ", " .. doing .. ", " .. status.label .. ", " .. note .. ", " .. model,
+				aria = session .. ", " .. project .. ", " .. doing .. ", " .. status.label .. ", " .. note .. ", " .. model,
 			}))
 			for _, sub in agent.subagents or {} do table.insert(rows, sub_row(agent, sub)) end
 		end
@@ -397,7 +410,7 @@ tern.block.define("agents", {
 				ui.node("col", { key = "directory", role = "factory-grid" }, {
 					ui.node("row", { role = "factory-columns" }, {
 						ui.node("row", { role = "factory-identifiers" }, {
-							ui.text("Tern session"), ui.text("Project"), ui.text("Path"), ui.text("Agent task"),
+							ui.text("Tern session"), ui.text("Project"), ui.text("Agent task"),
 						}),
 						ui.text("Status"),
 					}),
@@ -408,7 +421,7 @@ tern.block.define("agents", {
 						max = 0.35,
 					}, rows),
 				}),
-				if entry and entry.sub then sub_activity(entry.agent, entry.sub)
+				if entry and entry.sub then sub_activity(state, entry.agent, entry.sub)
 					elseif selected then activity(state, selected)
 					else ui.text({ ui.span("Open an omp agent block to see its activity here.", "muted") }),
 				limits.section(state.usage),
