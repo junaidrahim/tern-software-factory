@@ -6,10 +6,15 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
-harness = (root / "tests/behavior.luau").read_text()
-for half in ("tracking", "limits", "host", "window"):
-    harness = harness.replace(f"-- {half.upper()}_SOURCE", (root / f"{half}.luau").read_text())
+sources = {
+    name.upper().replace("/", "_"): (root / f"{name}.luau").read_text()
+    for name in ("tracking", "limits", "news/sources", "news/controller", "news/page", "models/controller", "models/page", "github/controller", "github/page", "repositories/section", "host", "window")
+}
 with tempfile.TemporaryDirectory() as directory:
-    script = Path(directory) / "behavior.luau"
-    script.write_text(harness)
-    subprocess.run([os.environ.get("LUAU", "luau"), str(script)], check=True)
+    for name in ("behavior", "news", "models", "models_controller", "github", "repositories", "repository_routes"):
+        harness = (root / "tests" / f"{name}.luau").read_text()
+        for marker, source in sources.items():
+            harness = harness.replace(f"-- {marker}_SOURCE", source)
+        script = Path(directory) / f"{name}.luau"
+        script.write_text(harness)
+        subprocess.run([os.environ.get("LUAU", "luau"), str(script)], check=True)

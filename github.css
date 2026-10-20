@@ -1,0 +1,85 @@
+[data-role='factory-github'] {
+  min-width: 0;
+  gap: 8px;
+  font-family: var(--sans);
+}
+[data-role='factory-pages'] > [data-role='factory-github'] {
+  flex: 1 1 0;
+  min-height: 0;
+}
+[data-role='factory-github'] > .sf { min-width: 0; flex-shrink: 0; }
+[data-role='factory-github-actions'] { align-items: center; flex-wrap: wrap; gap: 8px; }
+[data-role='factory-github-actions'] > .sf-text:first-child { font-size: 17px; font-weight: 600; }
+[data-role='factory-github-actions'] .sf-badge { margin: 0; }
+[data-role='factory-github-button'] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 9px;
+  border: 1px solid var(--l2);
+  border-radius: 6px;
+  background: var(--l1);
+  color: var(--t1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+[data-role='factory-github-button']:hover { background: var(--l2); }
+[data-role='factory-github-root'] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+[data-role='factory-github-error'],
+[data-role='factory-github-warning'] {
+  padding: 8px;
+  border: 1px solid var(--l2);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 110px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+[data-role='factory-github'] > [data-role='factory-github-tree'] {
+  flex: 1 1 0;
+  min-height: 0;
+  border: 1px solid var(--l2);
+  border-radius: 8px;
+  overflow: hidden;
+}
+[data-role='factory-github-tree'] .sf-list-scroll { height: 100%; max-height: 100% !important; }
+/* Native lists virtualize with a fixed row height above 200 items. */
+[data-role='factory-github-tree'] .sf-item {
+  height: calc(var(--sf-lh) + 6px);
+  min-height: 0;
+  box-sizing: border-box;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--l2);
+}
+[data-role='factory-github-tree'] .sf-item:last-child { border-bottom: 0; }
+[data-role='factory-github-tree'] .sf-item-label {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  gap: 8px;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: var(--sf-lh);
+}
+[data-role='factory-github-repository'] .sf-item-label { grid-template-columns: auto minmax(0, 1fr); }
+[data-role='factory-github-tree'] [data-role='factory-github-pr'] { padding-left: 18px; }
+[data-role='factory-github-pr'] .sf-item-label { grid-template-columns: auto minmax(0, 1fr) minmax(0, 30%); }
+[data-role='factory-github-tree'] .sf-item-label > span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+[data-role='factory-github-pr'] .sf-item-label > span:first-child { font-variant-numeric: tabular-nums; }
+[data-role='factory-github-tree'] .sf-item-ic,
+[data-role='factory-github-tree'] .sf-item-detail,
+[data-role='factory-github-tree'] .sf-item-value,
+[data-role='factory-github-tree'] .sf-item-hint { display: none; }
+[data-role='factory-github-tree'] .sf-list-empty { padding: 14px 10px; white-space: normal; overflow-wrap: anywhere; }
+[data-role='factory-github-footer'] { padding: 10px 12px; border-top: 1px solid var(--l2); font: 11px var(--sans); }
+[data-role='factory-github-footer'] .sf-text { white-space: normal; overflow-wrap: anywhere; }

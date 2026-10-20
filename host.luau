@@ -3,6 +3,13 @@
 -- (see window.luau) and handles pane navigation.
 local ui = tern.ui
 local limits = require("./limits")
+local news = require("./news/page")
+local news_controller = require("./news/controller")
+local models = require("./models/page")
+local models_controller = require("./models/controller")
+local github = require("./github/page")
+local github_controller = require("./github/controller")
+local repositories = require("./repositories/section")
 local LIST = "main.directory.agents"
 local REFRESH_MS = 1000
 
@@ -312,7 +319,7 @@ local function apply_snapshot(state, data, cx)
 	elseif not entry_found then
 		state.sub = nil
 	end
-	inspect_selected(state, cx)
+	if state.page == "agents" then inspect_selected(state, cx) end
 end
 
 -- Per open block: its state and cx, and the `seq` of the snapshot and details it applied.
@@ -325,6 +332,9 @@ local function poll()
 		local id = key(pane)
 		if not open[pane] then
 			blocks[pane] = nil
+			news_controller.detach(pane)
+			models_controller.detach(pane)
+			github_controller.detach(pane)
 			pcall(tern.kv.set, "snapshot:" .. id, nil)
 			pcall(tern.kv.set, "details:" .. id, nil)
 			continue
@@ -345,16 +355,12 @@ local function poll()
 		refresh_projects(block.state, block.cx)
 		if changed then pcall(function() block.cx:render() end) end
 	end
+	news_controller.tick()
+	models_controller.tick()
 	tern.timer(REFRESH_MS, poll)
 end
 
-tern.block.define("agents", {
-	init = function(cx)
-		local state = { agents = {}, projects = {}, selected = nil, loaded = false }
-		blocks[cx.pane] = { state = state, cx = cx }
-		return state
-	end,
-	title = function() return "Software Factory" end,
+local agents_page = {
 	view = function(state, cx)
 		local rows = {}
 		local counts = { working = 0, waiting_input = 0, idle = 0, failed = 0 }
@@ -395,6 +401,7 @@ tern.block.define("agents", {
 		local selected = entry and entry.agent
 		local heading = {
 			ui.text({ ui.span("Agents", "bold") }),
+			ui.badge(if state.repositories.section == "agents" then "Keyboard active" else "Tab to focus", "muted"),
 			ui.badge(if state.loaded then tostring(#state.agents) else "…", "muted"),
 		}
 		for _, name in { "working", "waiting_input", "failed", "idle" } do
@@ -404,7 +411,7 @@ tern.block.define("agents", {
 			table.insert(heading, ui.badge(tostring(subagents) .. (if subagents == 1 then " subagent" else " subagents"), "accent"))
 		end
 		return {
-			main = ui.node("col", { role = "factory-agents" }, {
+			main = ui.node("col", {}, {
 				ui.node("row", { role = "factory-heading" }, heading),
 				ui.text({ ui.span("Across all sessions on this host", "muted") }),
 				ui.node("col", { key = "directory", role = "factory-grid" }, {
@@ -424,15 +431,22 @@ tern.block.define("agents", {
 				if entry and entry.sub then sub_activity(state, entry.agent, entry.sub)
 					elseif selected then activity(state, selected)
 					else ui.text({ ui.span("Open an omp agent block to see its activity here.", "muted") }),
-				limits.section(state.usage),
+				repositories.view(state),
 			}),
+			layer = repositories.layer(state),
 			dock = ui.node("col", { role = "factory-footer" }, {
-				ui.text({ ui.span(if selected then selected.cwd else "Open an agent in Tern to see it here.", "muted") }),
-				ui.text({ ui.span("↑ ↓", "bold"), ui.span("  Select     ", "muted"), ui.span("Enter", "bold"), ui.span("  Go to pane", "muted") }),
+				ui.text({ ui.span(if state.repositories.section == "repositories"
+					then state.repositories.selected or state.repositories.root
+					elseif selected then selected.cwd else "Open an agent in Tern to see it here.", "muted") }),
+				ui.text({ ui.span(if state.repositories.section == "repositories"
+					then "Tab Agents · ↑ ↓ Select · Enter Shell block · Cmd+Enter New session · r Refresh"
+					else "Tab Repositories · ↑ ↓ Select · Enter Go to pane", "muted") }),
 			}),
 		}
 	end,
 	key = function(state, key, cx)
+		if repositories.key(state, key, cx) then return true end
+		if state.repositories.section == "repositories" then return false end
 		if key.ctrl or key.alt or key.meta then return false end
 		local list = entries(state)
 		local count = #list
@@ -451,9 +465,11 @@ tern.block.define("agents", {
 		return true
 	end,
 	event = function(state, event, cx)
+		if repositories.event(state, event, cx) then return end
 		if (event.ev == "select" or event.ev == "activate") and event.id == LIST then
 			for _, entry in entries(state) do
 				if item_id(entry.agent.pane, entry.sub) == event.item then
+					state.repositories.section = "agents"
 					select_entry(state, entry)
 					inspect_selected(state, cx)
 					if event.ev == "activate" then open_selected(state, cx) end
@@ -461,6 +477,103 @@ tern.block.define("agents", {
 				end
 			end
 		end
+	end,
+}
+
+-- Register pages here. Each supplies a view and optional key/event handlers.
+-- Views return region containers; the shell adds navigation to main.
+local pages = {
+	{
+		id = "agents", label = "Agents", init = repositories.init, save = repositories.save, enter = repositories.enter,
+		view = agents_page.view, key = agents_page.key, event = agents_page.event, capture_key = repositories.capture_key,
+	},
+	{
+		id = "limits", label = "Limits",
+		view = function(state)
+			return { main = ui.node("col", {}, { limits.section(state.usage) }) }
+		end,
+	},
+	{
+		id = "news", label = "News", init = news.init, save = news.save, enter = news.enter,
+		view = news.view, key = news.key, event = news.event, capture_key = news.capture_key,
+	},
+	{
+		id = "models", label = "Models", init = models.init, save = models.save, enter = models.enter,
+		view = models.view, key = models.key, event = models.event, capture_key = models.capture_key,
+	},
+	{
+		id = "github", label = "GitHub", init = github.init, save = github.save, enter = github.enter,
+		view = github.view, key = github.key, event = github.event,
+	},
+}
+local page_by_id, tabs = {}, {}
+for _, page in pages do
+	page_by_id[page.id] = page
+	table.insert(tabs, { id = page.id, label = page.label })
+end
+
+local function select_page(state, id, cx)
+	if not page_by_id[id] or state.page == id then return end
+	state.page = id
+	if id == "agents" then inspect_selected(state, cx) end
+	local page = page_by_id[id]
+	if page.enter then page.enter(state, cx) end
+end
+
+tern.block.define("agents", {
+	init = function(cx, _, saved)
+		local page = if type(saved) == "table" and page_by_id[saved.page] then saved.page else pages[1].id
+		local state = { page = page, agents = {}, projects = {}, selected = nil, loaded = false }
+		local saved_pages = if type(saved) == "table" and type(saved.pages) == "table" then saved.pages else {}
+		for _, entry in pages do
+			if entry.init then
+				if entry.id == "agents" then state.repositories = entry.init(saved_pages[entry.id])
+				else state[entry.id] = entry.init(saved_pages[entry.id]) end
+			end
+		end
+		blocks[cx.pane] = { state = state, cx = cx }
+		if page_by_id[page].enter then page_by_id[page].enter(state, cx) end
+		return state
+	end,
+	save = function(state)
+		local saved_pages = {}
+		for _, page in pages do
+			if page.save then saved_pages[page.id] = page.save(state) end
+		end
+		return { page = state.page, pages = saved_pages }
+	end,
+	title = function() return "Software Factory" end,
+	view = function(state, cx)
+		local view = page_by_id[state.page].view(state, cx)
+		view.main.p = view.main.p or {}
+		view.main.c = view.main.c or {}
+		view.main.p.role = "factory-pages"
+		table.insert(view.main.c, 1, ui.node("tabs", {
+			key = "pages", role = "factory-tabs", items = tabs, active = state.page,
+		}))
+		return view
+	end,
+	key = function(state, key, cx)
+		local page = page_by_id[state.page]
+		if page.capture_key and page.capture_key(state, key, cx) then return true end
+		if not key.ctrl and not key.alt and not key.meta and (key.name == "left" or key.name == "right") then
+			for i, page in pages do
+				if page.id == state.page then
+					local delta = if key.name == "right" then 1 else -1
+					select_page(state, pages[(i - 1 + delta) % #pages + 1].id, cx)
+					return true
+				end
+			end
+		end
+		return if page.key then page.key(state, key, cx) else false
+	end,
+	event = function(state, event, cx)
+		if event.ev == "select" and event.id == "main.pages" then
+			select_page(state, event.item, cx)
+			return
+		end
+		local page = page_by_id[state.page]
+		if page.event then page.event(state, event, cx) end
 	end,
 })
 

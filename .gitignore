@@ -1,2 +1,3 @@
 .DS_Store
 tern.d.luau
+__pycache__/

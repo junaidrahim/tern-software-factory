@@ -319,9 +319,46 @@ tern.on("agent_finished", function(event)
 	details[event.pane] = nil
 end)
 
+local function repository_path(encoded)
+	-- Decode once: a literal percent in a directory name must survive the route.
+	if encoded:gsub("%%%x%x", ""):find("%", 1, true) then return nil end
+	local path = encoded:gsub("%%(%x%x)", function(hex) return string.char(tonumber(hex, 16)) end)
+	if path:find("\0", 1, true) then return nil end
+	if path:sub(1, 1) ~= "/" and not path:match("^%a:[/\\]") then return nil end
+	return path
+end
+
+local function open_repository(request, cx)
+	local action, block_key, encoded = request.url:match("^tern%-software%-factory://(repo%-[a-z]+)/(%d+)/(.*)$")
+	if action ~= "repo-block" and action ~= "repo-session" then return nil end
+	local block, path = find_block(cx, block_key), repository_path(encoded)
+	if not block then return { handled = true } end
+	if not path then
+		cx:toast("error", "Cannot open repository", "Invalid directory path.")
+		return { handled = true }
+	end
+	local ok, problem = pcall(function()
+		if action == "repo-block" then
+			local pane = cx.layout:split(block.pane, "right", { cwd = path })
+			if not pane then error("The Software Factory block is no longer available.") end
+			cx.layout:focus(pane)
+		else
+			-- Session creation uses the current host, which need not be this block's.
+			local host = hosts_by_pane(cx)[block.pane]
+			if host == nil then error("The repository's host is no longer connected.") end
+			if cx.hosts:current().id ~= host then cx.hosts:switch(host) end
+			cx.sessions:create({ cwd = path })
+		end
+	end)
+	if not ok then cx:toast("error", "Cannot open repository", tostring(problem)) end
+	return { handled = true }
+end
+
 -- Links name the block they come from: Tern reports the focused pane, not the
 -- block, as a link's pane when the block opens it.
 tern.route.link(function(request, cx)
+	local repository = open_repository(request, cx)
+	if repository then return repository end
 	local action, block_key, id = string.match(request.url, "^tern%-software%-factory://([a-z]+)/(%d+)/(%d+)$")
 	if not id or (action ~= "pane" and action ~= "inspect") then return nil end
 	local block = find_block(cx, block_key)

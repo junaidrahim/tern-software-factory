@@ -4,6 +4,7 @@ local now = 1000
 -- omp runs (usage reports and task summaries): each holds its argv and the callback that delivers its result.
 local runs, summaries, decoded, files = {}, {}, {}, {}
 local gitRuns = {}
+local newsRuns, modelRuns, githubRuns, encoded = {}, {}, {}, {}
 -- `tern.kv` stores JSON, so values are copies.
 local store = {}
 local function copy(value)
@@ -12,8 +13,11 @@ local function copy(value)
 	for k, v in value do result[k] = copy(v) end
 	return result
 end
-local function node(kind, props, children) return { k = kind, p = props or {}, c = children } end
+local function node(kind, props, children)
+	return { k = kind, p = if props and next(props) then props else nil, c = children }
+end
 local tern = {
+	plugin = { dir = "/plugin", data = "/data" },
 	now = function() return now end,
 	on = function(name, handler) events[name] = handler end,
 	ui = {
@@ -27,11 +31,27 @@ local tern = {
 	},
 	json = {
 		array = function(value) return value or {} end,
+		encode = function(value)
+			table.insert(encoded, value)
+			return "encoded:" .. tostring(#encoded)
+		end,
 		decode = function(text) return assert(decoded[text], "Invalid JSON") end,
 	},
 	getenv = function(name) return if name == "HOME" then "/Users/test" else nil end,
 	fs = { exists = function(path) return files[path] == true end },
 	process = { run = function(argv, opts, callback)
+		if argv[#argv] == "/plugin/news/worker.py" then
+			table.insert(newsRuns, { argv = argv, opts = opts, done = callback })
+			return
+		end
+		if argv[#argv] == "/plugin/models/worker.py" then
+			table.insert(modelRuns, { argv = argv, opts = opts, done = callback })
+			return
+		end
+		if argv[#argv] == "/plugin/github/worker.py" then
+			table.insert(githubRuns, { argv = argv, opts = opts, done = callback })
+			return
+		end
 		if argv[1] == "git" then
 			table.insert(gitRuns, { argv = argv, done = callback })
 			return
@@ -51,7 +71,45 @@ end)()
 local limits = (function()
 -- LIMITS_SOURCE
 end)()
-local require = function(path) return if path == "./limits" then limits else tracking end
+local newsSources = (function()
+-- NEWS_SOURCES_SOURCE
+end)()
+local newsController = (function()
+local require = function() return newsSources end
+-- NEWS_CONTROLLER_SOURCE
+end)()
+local newsPage = (function()
+local require = function(path) return if path == "./controller" then newsController else newsSources end
+-- NEWS_PAGE_SOURCE
+end)()
+local modelsController = (function()
+-- MODELS_CONTROLLER_SOURCE
+end)()
+local modelsPage = (function()
+local require = function() return modelsController end
+-- MODELS_PAGE_SOURCE
+end)()
+local githubController = (function()
+-- GITHUB_CONTROLLER_SOURCE
+end)()
+local githubPage = (function()
+local require = function() return githubController end
+-- GITHUB_PAGE_SOURCE
+end)()
+local repositoriesSection = (function()
+-- REPOSITORIES_SECTION_SOURCE
+end)()
+local require = function(path)
+	if path == "./limits" then return limits end
+	if path == "./news/page" then return newsPage end
+	if path == "./news/controller" then return newsController end
+	if path == "./models/page" then return modelsPage end
+	if path == "./models/controller" then return modelsController end
+	if path == "./github/page" then return githubPage end
+	if path == "./github/controller" then return githubController end
+	if path == "./repositories/section" then return repositoriesSection end
+	return tracking
+end
 do
 local tern = setmetatable({ timer = function(_, callback) hostTick = callback end }, { __index = tern })
 -- HOST_SOURCE
@@ -74,7 +132,7 @@ local agents = {
 	{ pane = 200, state = "waiting_input", cwd = "/code/backend", model = "Test model", delivery_error = "Prompt could not be sent" },
 }
 local function blockContext(pane, onOpen)
-	return { pane = pane, rows = 30, render = function() end, open = function(_, url) onOpen(url) end }
+	return { pane = pane, rows = 30, render = function() end, frame = function() end, open = function(_, url) onOpen(url) end }
 end
 local blockCx = blockContext(100, function(url) opened = url end)
 local state = definition.init(blockCx)
@@ -131,8 +189,69 @@ localAgent.title = "\u{f418} Renamed task"
 tick(cx)
 assert(state.selected == 300, "Refreshing status or titles must preserve selection")
 local view = definition.view(state, blockCx)
--- main: heading, subtitle, agent grid, activity, limits.
-local function list(v) return v.main.c[3].c[2] end
+local function list(v) return v.main.c[4].c[2] end
+local function page(id)
+	definition.event(state, { ev = "select", id = "main.pages", item = id }, blockCx)
+end
+local selectedBefore = state.selected
+page("limits")
+assert(state.page == "limits" and definition.view(state, blockCx).dock == nil)
+assert(definition.key(state, { name = "enter" }, blockCx) == false,
+	"Limits must not activate a hidden agent")
+definition.event(state, { ev = "activate", id = "main.directory.agents", item = "main.directory.agents.p200" }, blockCx)
+assert(state.selected == selectedBefore, "Inactive page events cannot change agent selection")
+page("missing")
+assert(state.page == "limits", "Unknown tabs do not replace the active page")
+local restored = definition.init(blockContext(999, function() end), {}, definition.save(state))
+assert(restored.page == "limits", "The selected page survives reload")
+local fallback = definition.init(blockContext(998, function() end), {}, { page = "removed" })
+assert(fallback.page == "agents", "Removed saved pages fall back to Agents")
+key("right")
+assert(state.page == "news", "The next tab opens News")
+key("right")
+assert(state.page == "models", "The next tab opens Models")
+assert(definition.key(state, { name = "enter" }, blockCx) == false,
+	"Empty Models must not activate a hidden agent")
+key("right")
+assert(state.page == "github", "GitHub is appended after Models")
+assert(definition.key(state, { name = "enter" }, blockCx) == false,
+	"Empty GitHub must not activate a hidden agent")
+store["repositories:root"] = "/code"
+definition.event(state, { ev = "action", act = "github-refresh" }, blockCx)
+assert(#githubRuns == 1 and encoded[tonumber(githubRuns[1].opts.stdin:match("%d+$"))].root == "/code")
+decoded.githubAuth = { ok = false, root = "/code", repos = {}, error = "Run gh auth login on this host.", setup = true }
+githubRuns[1].done({ status = 0, stdout = "githubAuth", stderr = "" })
+assert(githubController.get().setup and githubController.get().error == decoded.githubAuth.error)
+local githubSaved = definition.save(state)
+assert(githubSaved.page == "github" and githubSaved.pages.github.root == nil)
+local githubRestored = definition.init(blockContext(997, function() end), {}, githubSaved)
+assert(githubRestored.page == "github" and #githubRuns == 1, "Saved GitHub reuses the host snapshot without an automatic retry")
+definition.event(state, { ev = "activate", id = "main.directory.agents", item = "main.directory.agents.p200" }, blockCx)
+assert(state.selected == selectedBefore, "GitHub ignores inactive agent row events")
+store["repositories:root"] = nil
+key("right")
+assert(state.page == "agents" and state.selected == selectedBefore, "Tab cycling preserves agent selection")
+key("left")
+assert(state.page == "github", "Previous tab wraps to the appended GitHub page")
+page("agents")
+key("tab")
+assert(state.repositories.section == "repositories" and state.page == "agents")
+key("down")
+assert(state.selected == selectedBefore, "Repository navigation cannot change the agent selection")
+page("limits")
+key("tab")
+assert(state.repositories.section == "repositories", "Repository section shortcuts are inactive on other pages")
+page("agents")
+definition.event(state, { ev = "action", act = "repositories-root" }, blockCx)
+key("right")
+assert(state.page == "agents" and state.repositories.editor ~= nil, "Root editor captures arrows before page navigation")
+key("escape")
+assert(state.repositories.editor == nil)
+key("tab")
+assert(state.repositories.section == "agents")
+key("left")
+assert(state.page == "github", "Page arrows resume after the root editor closes")
+page("agents")
 assert(#list(view).c == 2 and list(view).p.selected == "main.directory.agents.p300")
 assert(list(view).c[1].p.tone == "error", "Prompt delivery failures need an attention indicator")
 local first = list(view).c[1].p.label
@@ -259,7 +378,11 @@ key("down")
 assert(state.selected == 200 and state.sub == "43_Alpha", "Subagent rows are selectable")
 view = definition.view(state, blockCx)
 assert(list(view).p.selected == "main.directory.agents.p200.s43_Alpha")
-assert(view.main.c[4].c[1].c[1].p.text[1].t == "Alpha", "The activity panel shows the selected subagent")
+local activityPanel
+for _, child in view.main.c do
+	if child.p and child.p.role == "factory-activity" then activityPanel = child end
+end
+assert(activityPanel.c[1].c[1].p.text[1].t == "Alpha", "The activity panel shows the selected subagent")
 focused = nil
 key("enter"); open_route()
 assert(focused == 200, "Enter on a subagent goes to its agent's pane")
@@ -323,10 +446,9 @@ assert(state.agents[2].pane == 300 and state.agents[2].path == "site/", "The pat
 table.remove(agents, 2)
 cx.agents.transcript = function() return {} end
 
--- Claude and Codex limits come from `omp usage --json`, at the bottom of the block.
+-- Claude and Codex limits refresh on their own page.
 assert(#runs == 1 and table.concat(runs[1].argv, " ") == "omp usage --json", "One omp usage run at a time")
-view = definition.view(state, blockCx)
-assert(string.find(view.main.c[5].c[1].p.text[1].t, "Reading", 1, true), "Limits load until omp answers")
+page("limits")
 decoded.usage = { generatedAt = 1000000, reports = {
 	{ provider = "openai-codex", fetchedAt = 880000, limits = {}, metadata = { email = "a@work", planType = "ent" } },
 	{ provider = "openai-codex", fetchedAt = 760000, resetCredits = { availableCount = 3 },
@@ -344,7 +466,7 @@ runs[1].done({ status = 0, stdout = "usage", stderr = "", timed_out = false })
 now += 30000
 tick(cx)
 view = definition.view(state, blockCx)
-local section = view.main.c[5]
+local section = view.main.c[2]
 local limitRows = section.c[2].p.rows
 assert(#limitRows == 4, "Claude, then Codex accounts with limits first; other providers are left out")
 assert(limitRows[1][1][1].t == "Claude" and limitRows[1][3][1].t == "Claude Extra Usage" and limitRows[1][5][1].t == "$161.77 of $450.00")
@@ -359,7 +481,7 @@ tick(cx)
 assert(#runs == 2)
 runs[2].done({ status = 1, stdout = "", stderr = "no credentials\ndetails", timed_out = false })
 tick(cx)
-section = definition.view(state, blockCx).main.c[5]
+section = definition.view(state, blockCx).main.c[2]
 assert(#section.c[2].p.rows == 4 and section.c[3].p.text[1].t == "omp usage failed: no credentials",
 	"A failed refresh keeps the last limits and says why")
 files["/Users/test/Library/Application Support/Tern/omp/bin/omp"] = true
@@ -369,9 +491,10 @@ assert(runs[3].argv[1] == "/Users/test/Library/Application Support/Tern/omp/bin/
 decoded.codex = { generatedAt = 1, reports = { decoded.usage.reports[2] } }
 runs[3].done({ status = 0, stdout = "codex", stderr = "", timed_out = false })
 tick(cx)
-limitRows = definition.view(state, blockCx).main.c[5].c[2].p.rows
+limitRows = definition.view(state, blockCx).main.c[2].c[2].p.rows
 assert(limitRows[#limitRows][1][1].t == "Claude" and limitRows[#limitRows][2][1].t == "Not signed in to omp")
 assert(#warnings == 0)
+page("agents")
 
 -- Agent task: a one-sentence summary of recent activity, from a fast model, one run at a time.
 assert(#summaries == 1, "One summary at a time")

@@ -2,10 +2,10 @@ schema = 1
 id = "tern-software-factory"
 name = "Software Factory"
 version = "0.1.0"
-description = "See the agents on your Tern host and jump to their panes."
+description = "Agents, usage limits, technology news, AI model comparisons, and GitHub pull requests."
 host = "host.luau"
 window = "window.luau"
-styles = ["agents.css"]
+styles = ["agents.css", "news.css", "models.css", "github.css"]
 
 [[blocks]]
 id = "agents"
