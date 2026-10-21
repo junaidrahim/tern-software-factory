@@ -67,15 +67,19 @@ local function hn_source(story)
 end
 
 local function hn_order(snapshot)
-	local order, ranks = {}, {}
+	local order, timestamps, positions = {}, {}, {}
 	for index, story in snapshot.stories do
 		local source = hn_source(story)
 		if source then
 			table.insert(order, story.id)
-			ranks[story.id] = source.rank or (#snapshot.stories + index)
+			timestamps[story.id] = source.published_at or story.published_at
+			positions[story.id] = index
 		end
 	end
-	table.sort(order, function(a, b) return ranks[a] < ranks[b] end)
+	table.sort(order, function(a, b)
+		if timestamps[a] ~= timestamps[b] then return timestamps[a] > timestamps[b] end
+		return positions[a] < positions[b]
+	end)
 	return order
 end
 

@@ -3,6 +3,8 @@
 -- (see window.luau) and handles pane navigation.
 local ui = tern.ui
 local limits = require("./limits")
+local ops = require("./ops/section")
+local ops_controller = require("./ops/controller")
 local news = require("./news/page")
 local news_controller = require("./news/controller")
 local models = require("./models/page")
@@ -335,6 +337,7 @@ local function poll()
 			news_controller.detach(pane)
 			models_controller.detach(pane)
 			github_controller.detach(pane)
+			ops_controller.detach(pane)
 			pcall(tern.kv.set, "snapshot:" .. id, nil)
 			pcall(tern.kv.set, "details:" .. id, nil)
 			continue
@@ -357,6 +360,7 @@ local function poll()
 	end
 	news_controller.tick()
 	models_controller.tick()
+	ops_controller.tick()
 	tern.timer(REFRESH_MS, poll)
 end
 
@@ -488,9 +492,9 @@ local pages = {
 		view = agents_page.view, key = agents_page.key, event = agents_page.event, capture_key = repositories.capture_key,
 	},
 	{
-		id = "limits", label = "Limits",
+		id = "limits", label = "Limits", enter = ops.enter, key = ops.key, event = ops.event,
 		view = function(state)
-			return { main = ui.node("col", {}, { limits.section(state.usage) }) }
+			return { main = ui.node("col", {}, { limits.section(state.usage), ops.section() }) }
 		end,
 	},
 	{

@@ -8,10 +8,10 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 sources = {
     name.upper().replace("/", "_"): (root / f"{name}.luau").read_text()
-    for name in ("tracking", "limits", "news/sources", "news/controller", "news/page", "models/controller", "models/page", "github/controller", "github/page", "repositories/section", "host", "window")
+    for name in ("tracking", "limits", "ops/controller", "ops/section", "news/sources", "news/controller", "news/page", "models/controller", "models/page", "github/controller", "github/page", "repositories/section", "host", "window")
 }
 with tempfile.TemporaryDirectory() as directory:
-    for name in ("behavior", "news", "models", "models_controller", "github", "repositories", "repository_routes"):
+    for name in ("behavior", "ops", "news", "models", "models_controller", "github", "repositories", "repository_routes"):
         harness = (root / "tests" / f"{name}.luau").read_text()
         for marker, source in sources.items():
             harness = harness.replace(f"-- {marker}_SOURCE", source)

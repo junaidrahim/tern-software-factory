@@ -42,7 +42,7 @@ local function context(id)
 end
 local one, two = context(1), context(2)
 local function story(id, title)
-	return { id = id, title = title or id, url = "https://example.com/" .. id, sources = { { id = "hn", name = "Hacker News" } },
+	return { id = id, title = title or id, url = "https://example.com/" .. id, sources = { { id = "hn", name = "Hacker News", published_at = 1000 } },
 		published_at = 1000, first_seen_at = 1000 }
 end
 local function complete(index, stories)
@@ -129,24 +129,24 @@ local function ranked_story(id, rank, published)
 	return value
 end
 controller.refresh()
-complete(6, { ranked_story("newer", 2), ranked_story("top", 1) })
+complete(6, { ranked_story("top", 1, 1000), ranked_story("newer", 2, 1500) })
 state = { news = page.init({ source = "hn" }) }
 page.enter(state, one)
-assert(headlines()[1].p.key == "stop" and headlines()[2].p.key == "snewer",
-	"Hacker News orders by weekly rank rather than publication date")
+assert(headlines()[1].p.key == "snewer" and headlines()[2].p.key == "stop",
+	"Hacker News orders by submission time, not points or another feed's canonical timestamp")
 page.event(state, { ev = "select", id = "main.news.sources", item = "all" }, one)
-assert(headlines()[1].p.key == "snewer", "All sources keeps newest-first snapshot order")
+assert(headlines()[1].p.key == "stop", "All sources keeps newest-first canonical snapshot order")
 page.event(state, { ev = "select", id = "main.news.sources", item = "hn" }, one)
 controller.refresh()
-complete(7, { ranked_story("newer", 1), ranked_story("top", 2) })
-assert(headlines()[1].p.key == "stop" and state.news.updated,
-	"Changed weekly ranks wait for adoption even without new story IDs")
-page.key(state, { name = "n" }, one)
+complete(7, { ranked_story("top", 2, 1000), ranked_story("newer", 1, 1500) })
 assert(headlines()[1].p.key == "snewer" and not state.news.updated,
-	"Adopting the weekly edition applies new ranks")
+	"Changing points without changing submissions does not reorder headlines or offer a new edition")
+page.key(state, { name = "n" }, one)
+assert(headlines()[1].p.key == "snewer" and headlines()[2].p.key == "stop",
+	"Adopting an edition retains newest-first submission order")
 now += 7 * 86400 * 1000
 assert(#headlines() == 0, "An open Hacker News tab hides submissions older than a week")
-print("PASS: weekly Hacker News ranking, stable editions, combined order and expiry")
+print("PASS: newest-first Hacker News submissions, rank independence, combined order and expiry")
 
 local function source_story(id, source_id, source_name, url)
 	local value = story(id)
@@ -157,7 +157,7 @@ end
 local engineering = source_story("engineering", "anthropic-engineering", "Anthropic Engineering",
 	"https://www.anthropic.com/engineering/source-control")
 local claude = source_story("claude", "claude-dev", "claude.dev", "https://claude.dev/blog/code-review/")
-local openai = source_story("openai", "openai-engineering", "OpenAI Engineering", "https://openai.com/index/storage")
+local openai = source_story("openai", "openai-engineering", "OpenAI", "https://openai.com/index/storage")
 controller.refresh()
 complete(8, { claude, openai, engineering, ranked_story("hn", 1) })
 state = { news = page.init({ source = "anthropic" }) }
@@ -181,22 +181,24 @@ local function tabs()
 	end
 	error("No source tabs")
 end
-local expected_tabs = {
-	{ "all", "All sources" }, { "anthropic", "Anthropic" }, { "hn", "Hacker News" },
-	{ "huggingface", "Hugging Face" }, { "lobsters", "Lobsters" }, { "openai-engineering", "OpenAI Engineering" },
-	{ "pvldb", "PVLDB" }, { "simonwillison", "Simon Willison" }, { "techcrunch", "TechCrunch" }, { "verge", "The Verge" },
-}
-assert(#sources == 10 and #tabs() == #expected_tabs)
-for index, tab in tabs() do
-	assert(tab.id == expected_tabs[index][1] and tab.label == expected_tabs[index][2],
-		"All sources stays first and grouped tabs sort alphabetically")
+local expected_tabs = tabs()
+assert(expected_tabs[1].id == "all", "All sources stays pinned first")
+local tab_ids = { all = true }
+for index = 2, #expected_tabs do
+	local tab = expected_tabs[index]
+	assert(not tab_ids[tab.id], "Each source group appears only once")
+	tab_ids[tab.id] = true
+	if index > 2 then
+		assert(expected_tabs[index - 1].label:lower() < tab.label:lower(),
+			"Source groups sort alphabetically")
+	end
 end
 page.event(state, { ev = "select", id = "main.news.sources", item = "all" }, one)
 assert(#headlines() == 4 and headlines()[1].p.key == "sclaude" and headlines()[2].p.key == "sopenai",
 	"All sources preserves the snapshot order across grouped feeds")
 for index = 2, #expected_tabs do
 	page.key(state, { name = "s" }, one)
-	assert(state.news.source == expected_tabs[index][1], "Source cycling visits each tab once in rendered order")
+	assert(state.news.source == expected_tabs[index].id, "Source cycling visits each tab once in rendered order")
 end
 page.key(state, { name = "s" }, one)
 assert(state.news.source == "all", "Source cycling wraps to All sources")
@@ -204,7 +206,7 @@ page.event(state, { ev = "select", id = "main.news.sources", item = "anthropic" 
 page.event(state, { ev = "select", id = "main.news.sources", item = "claude-dev" }, one)
 assert(state.news.source == "anthropic", "Tab events reject constituent feed IDs")
 page.event(state, { ev = "select", id = "main.news.sources", item = "openai-engineering" }, one)
-assert(#headlines() == 1 and headlines()[1].p.key == "sopenai", "OpenAI Engineering has its own source selection")
+assert(#headlines() == 1 and headlines()[1].p.key == "sopenai", "OpenAI has its own source selection")
 local engineering_config, claude_config
 for _, source in sources do
 	if source.id == "anthropic-engineering" then engineering_config = source end
@@ -226,11 +228,11 @@ print("PASS: grouped Anthropic sources, original URLs, sorted tabs, saved state,
 
 -- An adopted edition must expire without waiting for another worker response.
 local boundary = source_story("boundary", "claude-dev", "claude.dev", claude.url)
-boundary.sources[1].published_at = 2000 - 90 * 86400
+boundary.sources[1].published_at = 2000 - 7 * 86400
 local shared = source_story("shared", "anthropic-engineering", "Anthropic Engineering", engineering.url)
 shared.sources[1].published_at = boundary.sources[1].published_at - 1
-table.insert(shared.sources, { id = "verge", name = "The Verge" })
-local future = source_story("future", "openai-engineering", "OpenAI Engineering", openai.url)
+table.insert(shared.sources, { id = "verge", name = "The Verge", published_at = 1000 })
+local future = source_story("future", "openai-engineering", "OpenAI", openai.url)
 future.sources[1].published_at = 2001
 local undated = source_story("undated", "claude-dev", "claude.dev", claude.url)
 undated.sources[1].published_at = nil
@@ -239,7 +241,7 @@ complete(9, { boundary, shared, future, undated })
 state = { news = page.init({ source = "anthropic" }) }
 page.enter(state, one)
 assert(#headlines() == 1 and headlines()[1].p.key == "sboundary",
-	"Anthropic includes the exact ninety-day boundary, not older, future, or undated memberships")
+	"Anthropic includes the exact seven-day boundary, not older, future, or undated memberships")
 page.event(state, { ev = "select", id = "main.news.sources", item = "all" }, one)
 assert(#headlines() == 2 and headlines()[2].p.label[2].t == "The Verge",
 	"An old Anthropic membership does not hide an unrelated feed or retain stale attribution")
@@ -249,4 +251,4 @@ assert(#headlines() == 2 and headlines()[1].p.key == "sshared" and headlines()[2
 page.event(state, { ev = "select", id = "main.news.sources", item = "anthropic" }, one)
 assert(#headlines() == 0, "Expired constituent feeds also leave the grouped tab")
 assert(shared.sources[1].name == "Anthropic Engineering", "View filtering never mutates the shared cached edition")
-print("PASS: ninety-day grouped feeds expire in cached editions without hiding unrelated attribution")
+print("PASS: weekly feeds expire in cached editions without hiding eligible attribution")

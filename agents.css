@@ -166,6 +166,79 @@
 }
 [data-role='factory-limits'] > .sf { flex-shrink: 0; }
 [data-role='factory-limits-heading'] { align-items: baseline; gap: 10px; }
+[data-role='factory-ops'] {
+  gap: 7px;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--l2);
+  font-family: var(--sans);
+}
+[data-role='factory-ops'] > .sf { flex-shrink: 0; min-width: 0; }
+[data-role='factory-ops'] > .sf-text { overflow-wrap: anywhere; }
+[data-role='factory-ops-heading'], [data-role='factory-ops-summary'],
+[data-role='factory-ops-subheading'] {
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+[data-role='factory-ops-heading'] { align-items: center; }
+[data-role='factory-ops-history'] { gap: 4px; min-width: 0; }
+[data-role='factory-ops-history'] > .sf { flex-shrink: 0; min-width: 0; }
+[data-role='factory-ops-history'] .sf-text { overflow-wrap: anywhere; }
+[data-role='factory-ops-history'] > .sf-text:nth-child(2),
+[data-role='factory-ops-subheading'] > .sf-text:last-child {
+  font-size: 11px;
+}
+[data-role='factory-ops-history-metrics'] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 18px;
+  margin-top: 4px;
+}
+[data-role='factory-ops-history-metrics'] > .sf-text {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--l2);
+}
+[data-role='factory-ops-history-metrics'] > .sf-text > span:first-child {
+  font-size: 11px;
+}
+[data-role='factory-ops-history-metrics'] > .sf-text > span:last-child {
+  text-align: right;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+[data-role='factory-ops-subheading'] {
+  margin-top: 6px;
+  padding-top: 8px;
+}
+[data-role='factory-ops-summary'] { font-size: 11px; }
+[data-role='factory-ops-commands'] {
+  padding-top: 8px;
+  border-top: 1px solid var(--l2);
+}
+[data-role='factory-ops-heading'] > .sf-text:first-child span {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 24px;
+}
+[data-role='factory-ops-button'] {
+  margin-left: auto;
+  padding: 4px 8px;
+  border: 1px solid var(--l2);
+  border-radius: 6px;
+  background: var(--l1);
+  color: var(--t1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+[data-role='factory-ops-button']:hover { background: var(--l2); }
+[data-role='factory-ops'] .sf-table { max-width: 100%; }
 [data-role='factory-footer'] {
   padding: 10px 12px;
   gap: 8px;

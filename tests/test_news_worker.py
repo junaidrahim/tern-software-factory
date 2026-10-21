@@ -55,6 +55,17 @@ def anthropic_html(slug="source-control", title="<b>Source control</b>", publish
     return ("<!DOCTYPE html><html><script>self.__next_f.push(" + flight + ")</script></html>").encode()
 
 
+def arxiv_entry(identifier, published, *, updated=None):
+    url = f"https://arxiv.org/abs/2601.{identifier:05d}"
+    published = worker.time.strftime("%Y-%m-%dT%H:%M:%SZ", worker.time.gmtime(published))
+    updated = published if updated is None else worker.time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", worker.time.gmtime(updated))
+    return (f"<entry><id>{url}</id><title>Paper {identifier}</title>"
+            f"<published>{published}</published><updated>{updated}</updated>"
+            f'<link href="{url}" rel="alternate" type="text/html"/>'
+            '<category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/></entry>')
+
+
 class NewsWorkerTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -124,6 +135,145 @@ class NewsWorkerTests(unittest.TestCase):
         self.routes[path] = (200, {"Content-Type": "application/json", "ETag": '"weekly"'},
                              json.dumps({"hits": hits, "nbPages": pages}).encode())
         return path
+
+    def arxiv_source(self):
+        return {"id": "arxiv-cs", "name": "arXiv CS", "kind": "arxiv_weekly",
+                "url": self.origin + "/arxiv", "interval_seconds": 3600}
+
+    def arxiv_route(self, entries, *, fail_start=None):
+        network = worker.HTTPFetcher(allow_private=True)
+
+        def fetch(url, headers, max_bytes):
+            endpoint = urlsplit(url)
+            if endpoint.path != "/arxiv":
+                return network(url, headers, max_bytes)
+            self.requests.append((endpoint.path + "?" + endpoint.query, dict(headers)))
+            query = parse_qs(endpoint.query)
+            start, count = int(query["start"][0]), int(query["max_results"][0])
+            if start == fail_start:
+                return worker.Response(503, b"Unavailable", {}, url)
+            body = ('<feed xmlns="http://www.w3.org/2005/Atom" '
+                    'xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">'
+                    '<id>urn:arxiv-fixture</id><title>arXiv Query</title>'
+                    f'<opensearch:totalResults>{len(entries)}</opensearch:totalResults>'
+                    f'<opensearch:startIndex>{start}</opensearch:startIndex>'
+                    f'<opensearch:itemsPerPage>{count}</opensearch:itemsPerPage>'
+                    + "".join(entries[start:start + count]) + "</feed>").encode()
+            return worker.Response(200, body, {"etag": '"arxiv-week"'}, url)
+
+        self.fetcher = fetch
+
+    def test_arxiv_complete_pages_exceed_rss_limit_and_refresh_without_validators(self):
+        self.sources.append(self.arxiv_source())
+        self.routes["/rss"] = (200, {}, rss([
+            (f"RSS {i}", self.origin + f"/rss/{i}", "") for i in range(250)]))
+        entries = [arxiv_entry(i, self.now - 60) for i in range(1, 502)]
+        self.arxiv_route(entries)
+        with patch.object(worker._arxiv.time, "sleep"):
+            first = self.call("refresh")["snapshot"]
+        papers = [story for story in first["stories"] if story["sources"][0]["id"] == "arxiv-cs"]
+        self.assertEqual(len(papers), 501)
+        self.assertEqual(len(first["stories"]), 501 + worker.MAX_FEED_ENTRIES)
+        self.assertTrue(all(story["sources"][0]["published_at"] == self.now - 60 for story in papers))
+        self.assertIsNone(first["feeds"][1]["error"])
+        self.assertEqual(first["feeds"][1]["next_refresh"], self.now + 3600)
+        with closing(sqlite3.connect(self.db)) as database:
+            database.execute("UPDATE feeds SET etag='stale',modified='stale' WHERE id='arxiv-cs'")
+            database.commit()
+        self.now += 3600
+        self.arxiv_route(entries[:1])
+        refreshed = self.call("refresh")["snapshot"]
+        self.assertEqual(len(refreshed["stories"]), worker.MAX_FEED_ENTRIES + 1)
+        remaining = next(story for story in refreshed["stories"] if story["sources"][0]["id"] == "arxiv-cs")
+        self.assertEqual(remaining, next(story for story in papers if story["url"] == remaining["url"]))
+        requests = [(path, headers) for path, headers in self.requests if path.startswith("/arxiv?")]
+        self.assertEqual([int(parse_qs(urlsplit(path).query)["start"][0]) for path, _ in requests], [0, 500, 0])
+        for _, headers in requests:
+            self.assertNotIn("If-None-Match", headers)
+            self.assertNotIn("If-Modified-Since", headers)
+
+    def test_arxiv_week_is_additional_to_snapshot_and_retention_allowances(self):
+        self.sources.extend([self.hn_source(), self.arxiv_source()])
+        self.call("snapshot")
+        with closing(sqlite3.connect(self.db)) as database:
+            database.executemany(
+                "INSERT INTO stories(url,title,published_at,first_seen_at) VALUES(?,?,?,?)",
+                [(self.origin + f"/ordinary/{i}", f"Ordinary {i}", self.now - 1, self.now) for i in range(2100)])
+            database.execute("""INSERT INTO story_sources(story_id,source_id,published_at)
+                SELECT id,'rss',published_at FROM stories""")
+            database.execute("UPDATE feeds SET next_refresh=? WHERE id='rss'", (self.now + 3600,))
+            database.commit()
+        self.hn_route([self.hn_hit(i, published=int(self.now) - 100000) for i in range(1, 101)])
+        self.arxiv_route([arxiv_entry(i, self.now - 60) for i in range(1, 2102)])
+        with patch.object(worker._arxiv.time, "sleep"):
+            snapshot = self.call("refresh")["snapshot"]
+        self.assertTrue(all(feed["error"] is None for feed in snapshot["feeds"]))
+        self.assertEqual(len(snapshot["stories"]), 2101 + worker.MAX_SNAPSHOT)
+        counts = {source: sum(any(member["id"] == source for member in story["sources"])
+                              for story in snapshot["stories"]) for source in ("rss", "hn", "arxiv-cs")}
+        self.assertEqual(counts, {"rss": 900, "hn": 100, "arxiv-cs": 2101})
+        self.assertEqual(
+            {story["url"] for story in snapshot["stories"] if story["sources"][0]["id"] == "arxiv-cs"},
+            {f"https://arxiv.org/abs/2601.{i:05d}" for i in range(1, 2102)})
+        with closing(sqlite3.connect(self.db)) as database:
+            self.assertEqual(database.execute("SELECT count(*) FROM stories").fetchone()[0],
+                             2101 + worker.MAX_STORIES)
+            self.assertEqual(dict(database.execute(
+                "SELECT source_id,count(*) FROM story_sources GROUP BY source_id")),
+                {"rss": 1900, "hn": 100, "arxiv-cs": 2101})
+
+    def test_arxiv_failed_page_and_write_preserve_previous_complete_edition(self):
+        self.sources = [self.arxiv_source()]
+        self.arxiv_route([arxiv_entry(1, self.now), arxiv_entry(2, self.now)])
+        first = self.call("refresh")["snapshot"]
+        self.now += 60
+        self.arxiv_route([arxiv_entry(i, self.now) for i in range(3, 504)], fail_start=500)
+        with patch.object(worker._arxiv.time, "sleep"):
+            failed = self.call("refresh", force=True)["snapshot"]
+        self.assertEqual(failed["stories"], first["stories"])
+        self.assertEqual(failed["feeds"][0]["last_success"], first["feeds"][0]["last_success"])
+        self.assertTrue(failed["feeds"][0]["error"])
+        with closing(sqlite3.connect(self.db)) as database:
+            self.assertEqual(database.execute("SELECT count(*) FROM stories").fetchone()[0], 2)
+            database.execute("""CREATE TRIGGER fail_arxiv_insert BEFORE INSERT ON story_sources
+                WHEN NEW.source_id='arxiv-cs' AND NEW.story_id=(
+                    SELECT id FROM stories WHERE url='https://arxiv.org/abs/2601.00004')
+                BEGIN SELECT RAISE(ABORT, 'fixture write failure'); END""")
+            database.commit()
+        self.arxiv_route([arxiv_entry(3, self.now), arxiv_entry(4, self.now)])
+        failed = self.call("refresh", force=True)["snapshot"]
+        self.assertEqual(failed["stories"], first["stories"])
+        self.assertEqual(failed["feeds"][0]["last_success"], first["feeds"][0]["last_success"])
+        self.assertIn("fixture write failure", failed["feeds"][0]["error"])
+        with closing(sqlite3.connect(self.db)) as database:
+            self.assertEqual(database.execute("SELECT count(*) FROM stories").fetchone()[0], 2)
+
+    def test_arxiv_uses_first_submission_and_expires_without_refresh(self):
+        self.sources.append(self.arxiv_source())
+        self.routes["/rss"] = (200, {}, rss([("Shared paper", "https://arxiv.org/abs/2601.00001", "")]))
+        boundary = self.now - 7 * 86400
+        self.arxiv_route([arxiv_entry(1, boundary), arxiv_entry(2, boundary),
+                          arxiv_entry(3, self.now - 1),
+                          arxiv_entry(4, boundary - 1, updated=self.now)])
+        first = self.call("refresh")["snapshot"]
+        self.assertEqual({story["url"] for story in first["stories"]},
+                         {f"https://arxiv.org/abs/2601.{i:05d}" for i in (1, 2, 3)})
+        shared = next(story for story in first["stories"] if story["url"].endswith("00001"))
+        self.assertEqual(shared["published_at"], 1_700_000_000)
+        self.assertEqual(next(source["published_at"] for source in shared["sources"]
+                              if source["id"] == "arxiv-cs"), boundary)
+        count = len(self.requests)
+        self.now += 1
+        expired = self.call("snapshot")["snapshot"]
+        self.assertEqual(len(self.requests), count)
+        self.assertEqual({story["url"] for story in expired["stories"]},
+                         {f"https://arxiv.org/abs/2601.{i:05d}" for i in (1, 3)})
+        shared_after = next(story for story in expired["stories"] if story["id"] == shared["id"])
+        self.assertEqual([source["id"] for source in shared_after["sources"]], ["rss"])
+        self.arxiv_route([])
+        empty = self.call("refresh", force=True)["snapshot"]
+        self.assertEqual(empty["stories"], [shared_after])
+        self.assertIsNone(empty["feeds"][1]["error"])
 
     def test_weekly_hn_rolling_bounds_and_hourly_unconditional_requests(self):
         self.sources = [self.hn_source()]
@@ -327,9 +477,10 @@ class NewsWorkerTests(unittest.TestCase):
             with self.subTest(kind=invalid), self.assertRaisesRegex(worker.NewsError, "source kind"):
                 worker.source_config([{**self.sources[0], "kind": invalid}])
 
-    def test_ten_sources_and_engineering_configuration(self):
+    def test_eleven_sources_and_engineering_configuration(self):
         sources = [{**self.sources[0], "id": f"source-{index}"} for index in range(10)]
-        self.assertEqual(len(worker.source_config(sources)), 10)
+        sources.append(self.arxiv_source())
+        self.assertEqual(len(worker.source_config(sources)), 11)
         with self.assertRaisesRegex(worker.NewsError, "at most"):
             worker.source_config(sources + [{**self.sources[0], "id": "overflow"}])
         self.assertEqual(worker.source_config([
@@ -339,10 +490,15 @@ class NewsWorkerTests(unittest.TestCase):
         for invalid in [None, [], True, "x" * 121]:
             with self.subTest(category=invalid), self.assertRaisesRegex(worker.NewsError, "source category"):
                 worker.source_config([{**self.sources[0], "category": invalid}])
+        for configured in (self.arxiv_source(), {**self.arxiv_source(), "window_days": 7}):
+            self.assertEqual(worker.source_config([configured])[0]["window_seconds"], 7 * 86400)
+        for window in (0, 1, 8, 90):
+            with self.subTest(window=window), self.assertRaisesRegex(worker.NewsError, "seven-day"):
+                worker.source_config([{**self.arxiv_source(), "window_days": window}])
 
     def test_engineering_category_filter_precedes_entry_limit(self):
         self.sources = [{**self.sources[0], "id": "openai-engineering",
-                         "name": "OpenAI Engineering", "category": "Engineering"}]
+                         "name": "OpenAI", "category": "Engineering"}]
         items = []
         for index in range(worker.MAX_FEED_ENTRIES):
             items.append(f"<item><title>Engineering headline {index}</title>"
@@ -376,7 +532,7 @@ class NewsWorkerTests(unittest.TestCase):
             b"</channel>", "".join(entries).encode() + b"</channel>"))
         self.routes["/other"] = (200, {}, rss([("Other feed", self.origin + "/boundary", "")]))
         self.sources = [
-            {"id": "openai-engineering", "name": "OpenAI Engineering", "url": self.origin + "/window",
+            {"id": "openai-engineering", "name": "OpenAI", "url": self.origin + "/window",
              "category": "Engineering", "window_days": 90},
             {"id": "other", "name": "Other", "url": self.origin + "/other"},
         ]

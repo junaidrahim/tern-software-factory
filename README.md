@@ -1,16 +1,62 @@
 # Tern Software Factory
 
-Agents, usage limits, technology news, AI model comparisons, and GitHub pull requests in one native Tern block.
+A native [Tern](https://docs.stencil.so/tern/) plugin for monitoring coding agents,
+navigating repositories and worktrees, tracking usage limits, reading tech news,
+comparing AI models, and browsing GitHub pull requests—all in one multi-page block.
+
+## Pages
+
+| Page | What it provides |
+| --- | --- |
+| [Agents](#agents) | Live agents and subagents across sessions on the same host, activity summaries, and pane navigation. A nested repository/worktree list opens shell blocks or new sessions. |
+| [Limits](#limits) | Claude and Codex account usage limits, plus local agent performance and recorded command statistics. |
+| [News](#news) | A compact headline feed with source filters and direct article links. Includes Anthropic engineering, claude.dev, and OpenAI. |
+| [Models](#models) | Artificial Analysis intelligence, coding, and agentic scores, generation speed, and token prices. |
+| [GitHub](#github) | Local GitHub repositories with open PRs nested underneath, including authors, branches, and draft status. |
+
+The repository root is saved per host and shared by new blocks and the GitHub
+page. Each block keeps its own page, filters, and selection.
+
+## Requirements
+
+- **Tern**, with both the host and desktop window halves of the plugin loaded.
+  Tested with Tern 0.9.0.
+- **omp** for recognized agent activity, task summaries, and account usage limits.
+- **Git** for repository/worktree discovery and GitHub remote discovery.
+- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** on the host for
+  repository scanning, Agent ops, News, Models, and GitHub. It provisions Python 3.11+ and
+  declared dependencies; these workers support macOS and Linux.
+- **[GitHub CLI](https://cli.github.com/)** authenticated on that host for the
+  GitHub page, and a **free Artificial Analysis API key** for Models. These are
+  only needed for their respective pages.
 
 ## Install
 
-From this directory, run:
+Clone and link the plugin:
+
+```sh
+git clone https://github.com/junaidrahim/tern-software-factory.git
+tern plugin link ./tern-software-factory
+```
+
+Or, from an existing checkout:
 
 ```sh
 tern plugin link .
 ```
 
 Open the Tern command palette. Select **New Software Factory block**.
+
+### First-time setup
+
+1. On **Agents**, select **Root folder** and enter the directory containing your
+   repositories, such as `~/Code`. New blocks inherit this root automatically.
+2. For **GitHub**, run `gh auth login --hostname github.com` on the host, then
+   open the page. It uses the same repository root.
+3. For **Models**, use the key icon to enter and save your Artificial Analysis
+   API key. The key stays in the host's plugin data directory, outside the repo.
+4. Open **News** to fetch feeds. News refreshes hourly; Models refreshes every
+   six hours. GitHub has an explicit **Refresh** button.
 
 ## Use
 
@@ -187,6 +233,61 @@ is open. It uses the omp that Tern installs, or `omp` on your PATH. omp caches
 provider reports, so the update time can be older than a minute. If a refresh
 fails, the block keeps the last limits and shows the error.
 
+#### Agent ops
+
+Below the quota meters, **Agent ops** reads `~/.omp/agent/agent.db` and retained
+session files under `~/.omp/agent/sessions/` on the host running the block.
+It separates **Recorded history** totals from **Rolling performance** estimates
+and shows the five most-used recorded commands.
+History counters use an aligned two-column grid with right-aligned values.
+Performance has its own heading and compact table, with commands separated below.
+Refresh stays in the widget header; freshness notices appear only for stale data.
+
+Recorded history includes:
+
+- **Sessions**: unique top-level saved sessions, including forks.
+- **Subagent runs**: unique nested sessions, counted separately.
+- **Responses**: distinct assistant responses with recorded token usage.
+- **Total tokens**, with **Input**, **Output**, **Cache read**, and **Cache write**
+  breakdowns across both sessions and subagents.
+
+These counters cover all retained local history, not only the past week and not
+deleted sessions. Copied responses are deduplicated across branches using their
+provider response ID, or their record identity when no response ID is present.
+Total tokens use the provider's recorded total, falling back to the sum of all
+four token components only when each is available. Reused cached context counts
+as usage on each distinct response; these are not counts of unique text.
+Unreadable or incomplete histories are marked **Partial coverage**. Unknown token
+components show `—`, not zero.
+
+Rolling performance is locally observed—not benchmark data from the Models page:
+
+| Metric | Calculation / meaning |
+| --- | --- |
+| Generation speed | Recorded output tokens × 1,000 ÷ generation milliseconds |
+| First token | Recorded first-token milliseconds ÷ first-token sample weight |
+| Average output | Recorded output tokens ÷ sample weight |
+| Effective samples | omp's accumulated, decaying sample weight |
+| Recorded command uses | Sum of all command counters, not just the top five shown |
+
+omp periodically downweights older performance samples. These are **rolling
+estimates**, not lifetime request counts or token totals, and do not use the News
+page's seven-day filter. Missing measurements display `—`. Models sort by their
+latest recorded performance update.
+
+The widget loads when Limits is first opened and refreshes once a minute while
+a subscribed block remains open. Blocks on the same host share one serialized
+worker. **Refresh** or **r** on Limits refreshes Agent ops; quota meters retain
+their independent refresh schedule. Failures retain the last successful stats
+with a stale warning; missing databases and incompatible tables are reported.
+
+The worker requires uv/Python 3.11+ and uses only Python's standard library.
+SQLite is opened read-only: no database creation, schema changes, or migrations.
+Only `model_perf` and `command_usage` are queried from the database. Session JSONL
+is streamed locally to extract identities and usage; message contents and
+credential fields are never returned, logged, transmitted, or copied into plugin
+storage. History is also usable when the database is unavailable, and vice versa.
+
 ### Models
 
 Models compares Artificial Analysis's free-tier Intelligence, Coding, and Agentic
@@ -235,30 +336,43 @@ within the same benchmark version, not combined into a custom universal score.
 
 ### News
 
-News combines Anthropic, Hacker News, Hugging Face, Lobsters, OpenAI Engineering,
+News combines Anthropic, arXiv CS, Hacker News, Hugging Face, Lobsters, OpenAI,
 PVLDB, Simon Willison, TechCrunch, and The Verge into a newest-first headline list.
-Filter by source or headline/source text. Hacker News uses Algolia's top 100 stories
-by points from the rolling last
-seven days, rather than only the current front page. Its source tab is ranked by
-points; **All sources** stays newest-first. Source tabs are alphabetical, with
-**All sources** pinned first; keyboard source cycling follows the same order.
+Filter by source or headline/source text. Every source tab and **All sources**
+display headlines in **reverse chronological order (newest first)**.
+Hacker News still selects Algolia's top 100 stories by points from the rolling
+last seven days, but displays them by submission time rather than score.
+Source tabs are alphabetical, with **All sources** pinned first; keyboard source
+cycling follows the same order.
 
 **Anthropic** combines the [engineering blog](https://www.anthropic.com/engineering)
 and [claude.dev](https://claude.dev/), retaining each article's original source label.
 Engineering articles come from the official index's published CMS metadata;
-claude.dev uses its official RSS feed. **OpenAI Engineering** uses
+claude.dev uses its official RSS feed. **OpenAI** uses
 [OpenAI's official RSS](https://openai.com/news/rss.xml), filtered to the
 Engineering category—not company announcements.
 
-Both tabs show the rolling **last 90 days**, including claude.dev. Expired
-memberships also leave **All sources**, but a headline remains if another eligible
-feed carries it. Cached editions expire without waiting for another fetch.
-Articles without a valid publication date or dated in the future are excluded
-from these time-limited feeds. Other sources keep their existing windows.
+Every source shows the rolling **last seven days**, including **All sources**.
+Expired memberships disappear even from cached editions without waiting for
+another fetch. A headline remains if another source carries it with an eligible
+date. Articles without a valid publication date or dated in the future are excluded.
+RSS sources can only show the entries currently supplied by their feeds; this
+filter does not backfill a publisher's archive.
+
+**arXiv CS** shows first submissions from the rolling **last seven days** across
+all computer-science subcategories (`cs.*`), including cross-listed papers.
+It uses the [official arXiv API](https://info.arxiv.org/help/api/user-manual.html)
+and paginates the complete weekly result, rather than using the daily RSS feed.
+Older papers do not reappear merely because a revision was uploaded. Enter opens
+the paper's arXiv abstract page. Like the other feeds, it refreshes hourly;
+multi-page requests respect arXiv's three-second request spacing.
+An edition replaces the cache only after every page succeeds. Incomplete responses
+or queries exceeding arXiv's 30,000-result API ceiling retain the previous,
+still-unexpired edition rather than presenting a partial week.
 
 New arrivals appear behind a **new stories · Show** button rather than moving
-the list under your selection. Weekly ranking changes offer **Updated stories ·
-Show** when no new stories arrive. Click Show or press `n` to adopt that edition.
+the list under your selection. Changes to the weekly HN selection offer **Updated
+stories · Show** when no new stories arrive. Click Show or press `n` to adopt that edition.
 
 Select a headline and press **Enter** (or `o`) to open its original link.
 Activating a row opens that link too. The headline list, selection, and filters
@@ -275,7 +389,7 @@ without per-source update tickers below it.
 | / | Edit search; Enter or Esc finishes editing |
 | s | Cycle sources |
 | r | Refresh feeds |
-| n | Adopt new stories and updated weekly rankings |
+| n | Adopt new stories and updated editions |
 | o | Open the original article |
 
 #### Runtime and cache
@@ -285,8 +399,9 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/) on the
 Opening News launches `uv run --script news/worker.py`; uv provides Python 3.11+
 and the declared `feedparser` dependency in an isolated cache.
 The first launch needs network access to install dependencies. The worker supports
-macOS and Linux hosts (its deadlines use POSIX signals). Agent discovery and Limits
-do not depend on this runtime; repository scanning and Models also use uv.
+macOS and Linux hosts (its deadlines use POSIX signals). Agent discovery and quota
+meters do not depend on this runtime; Agent ops, repository scanning, Models, and
+GitHub also use uv.
 
 News starts lazily when first opened, then refreshes every hour while
 at least one subscribed block remains open, even if another page is selected.
@@ -296,7 +411,9 @@ own filters and selection. Feed failures retain cached headlines.
 
 Headlines live in `news.sqlite3` under `tern.plugin.data`, not in the checkout.
 The cache retains up to 2,000 stories and shows up to 1,000, preserving the active
-HN weekly selection. News filters and the selected headline are saved per block.
+HN weekly selection. Active arXiv weekly submissions are retained and shown in
+addition to these limits, so they neither truncate the week nor crowd out the
+other feeds. News filters and the selected headline are saved per block.
 Existing caches migrate without losing headline IDs or source attribution.
 
 The worker fetches feeds and Anthropic's engineering index; it does not fetch or
@@ -309,13 +426,14 @@ limits; authenticated feeds and private-network feeds are not supported.
 Edit `news/sources.luau` and reload the plugin. Each entry has a stable
 `id`, display `name`, `url`, `enabled`, and `interval_seconds` (minimum 60).
 Sources default to RSS/Atom; Hacker News uses `kind = "hn_weekly"` with the
-Algolia search API. A successful weekly refresh replaces HN membership without
-removing headlines attributed to other sources.
+Algolia search API, and arXiv uses `kind = "arxiv_weekly"` with its Atom API.
+A successful weekly refresh replaces that source's membership without removing
+headlines attributed to other sources.
 Anthropic engineering uses `kind = "anthropic_engineering"`. RSS entries can set a
 `category` filter; matching happens before the per-feed article cap. Optional
 `tab` and `tab_name` group multiple feeds under one source tab. `window_days`
 limits a feed to a rolling publication window.
-Keep the id when renaming a source. Up to ten feeds are supported per refresh;
+Keep the id when renaming a source. Up to eleven feeds are supported per refresh;
 disabled or removed feeds stop contributing to the headline list.
 
 The worker normalizes article URLs and combines source attribution when feeds
@@ -404,6 +522,12 @@ Run GitHub worker tests (temporary Git repositories; no network requests) with:
 
 ```sh
 python3 -m unittest discover -s tests -p test_github_worker.py
+```
+
+Run Agent ops tests against isolated SQLite and session-history fixtures with:
+
+```sh
+python3 -m unittest discover -s tests -p 'test_ops_*.py'
 ```
 
 Set `LUAU` to the interpreter path if `luau` is not on your PATH.

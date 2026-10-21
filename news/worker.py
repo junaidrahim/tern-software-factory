@@ -32,16 +32,21 @@ _anthropic = importlib.util.module_from_spec(_anthropic_spec)
 sys.modules[_anthropic_spec.name] = _anthropic
 _anthropic_spec.loader.exec_module(_anthropic)
 
+_arxiv_spec = importlib.util.spec_from_file_location("tern_news_arxiv", Path(__file__).with_name("arxiv.py"))
+_arxiv = importlib.util.module_from_spec(_arxiv_spec)
+sys.modules[_arxiv_spec.name] = _arxiv
+_arxiv_spec.loader.exec_module(_arxiv)
+
 MAX_REQUEST = 64 * 1024
 MAX_FEED_BYTES = 2 * 1024 * 1024
-MAX_SOURCES = 10
+MAX_SOURCES = 11
 MAX_FEED_ENTRIES = 200
 HN_WEEK_SECONDS = 7 * 86400
 HN_STORIES = 100
 MAX_STORIES = 2000
 MAX_SNAPSHOT = 1000
 FETCH_SECONDS = 10
-REFRESH_SECONDS = 40
+REFRESH_SECONDS = 90
 REDIRECTS = {301, 302, 303, 307, 308}
 CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 TRACKING_QUERY = {"fbclid", "gclid", "dclid", "mc_cid", "mc_eid"}
@@ -250,14 +255,16 @@ def source_config(sources):
         if isinstance(interval, bool) or not isinstance(interval, (float, int)) or not math.isfinite(interval):
             raise NewsError("Invalid source refresh interval")
         kind = source.get("kind", "rss")
-        if kind not in ("rss", "hn_weekly", "anthropic_engineering"):
+        if kind not in ("rss", "hn_weekly", "anthropic_engineering", "arxiv_weekly"):
             raise NewsError("Invalid source kind")
         category = source.get("category", "")
         if not isinstance(category, str) or len(category) > 120:
             raise NewsError("Invalid source category")
-        window_days = source.get("window_days", 0)
+        window_days = source.get("window_days", 7 if kind == "arxiv_weekly" else 0)
         if type(window_days) is not int or not 0 <= window_days <= 365:
             raise NewsError("Invalid source age window")
+        if kind == "arxiv_weekly" and window_days != 7:
+            raise NewsError("arXiv requires a seven-day source age window")
         result.append({"id": identifier, "name": text(source.get("name") or identifier, 120),
                        "url": normalize_url(source.get("url")), "enabled": bool(source.get("enabled", True)),
                        "kind": kind, "category": category.strip().casefold(), "window_seconds": window_days * 86400,
@@ -341,13 +348,18 @@ class Worker:
                  OR ss.published_at BETWEEN ? AND ?)
             AND (f.window_seconds=0 OR ss.published_at BETWEEN ?-f.window_seconds AND ?)"""
         bounds = (now - HN_WEEK_SECONDS, now, now, now)
-        stories = self.db.execute(f"""WITH active AS ({active})
-            SELECT * FROM stories WHERE id IN (
-                SELECT s.id FROM stories s WHERE EXISTS (
-                    SELECT 1 FROM active a WHERE a.story_id=s.id)
+        # A complete arXiv edition is additional to the ordinary feed allowance.
+        # Excluding it from that allowance also protects older shared stories.
+        stories = self.db.execute(f"""WITH active AS ({active}),
+            weekly AS (SELECT story_id FROM active WHERE kind='arxiv_weekly'),
+            ordinary AS (
+                SELECT s.id FROM stories s WHERE s.id NOT IN (SELECT story_id FROM weekly)
+                AND EXISTS (SELECT 1 FROM active a WHERE a.story_id=s.id)
                 ORDER BY EXISTS (SELECT 1 FROM active a
                     WHERE a.story_id=s.id AND a.kind='hn_weekly') DESC,
                     s.published_at DESC, s.id DESC LIMIT ?)
+            SELECT * FROM stories WHERE id IN (SELECT story_id FROM weekly)
+                OR id IN (SELECT id FROM ordinary)
             ORDER BY published_at DESC, id DESC""", (*bounds, MAX_SNAPSHOT)).fetchall()
         attribution = {}
         for row in self.db.execute(active + " ORDER BY f.id", bounds):
@@ -387,7 +399,7 @@ class Worker:
 
     def ingest_entries(self, entries, base_url, source, now):
         for index, entry in enumerate(entries):
-            if index >= MAX_FEED_ENTRIES:
+            if source["kind"] != "arxiv_weekly" and index >= MAX_FEED_ENTRIES:
                 break
             raw_url = entry.get("link")
             if not raw_url:
@@ -416,6 +428,12 @@ class Worker:
             self.db.execute("""INSERT INTO story_sources(story_id,source_id,guid,published_at) VALUES(?,?,?,?)
                 ON CONFLICT(story_id,source_id) DO UPDATE SET guid=excluded.guid,published_at=excluded.published_at""",
                 (story["id"], source["id"], text(entry.get("id") or entry.get("guid"), 1024) or None, timestamp))
+
+    def ingest_arxiv_weekly(self, source, now):
+        """Replace memberships only after every page of the edition is fetched."""
+        entries = _arxiv.fetch_week(self.fetch, source["url"], now, MAX_FEED_BYTES)
+        self.db.execute("DELETE FROM story_sources WHERE source_id=?", (source["id"],))
+        self.ingest_entries(entries, source["url"], source, now)
 
     def ingest_hn_weekly(self, source, now):
         """Fetch a complete edition before changing any cached memberships."""
@@ -505,6 +523,9 @@ class Worker:
                     if source["kind"] == "hn_weekly":
                         self.ingest_hn_weekly(source, now)
                         etag = modified = None
+                    elif source["kind"] == "arxiv_weekly":
+                        self.ingest_arxiv_weekly(source, now)
+                        etag = modified = None
                     else:
                         response = self.fetch(source["url"], headers, MAX_FEED_BYTES)
                         if response.status == 304 and row["last_success"] is None:
@@ -523,13 +544,20 @@ class Worker:
                 self.db.execute("UPDATE feeds SET error=?,next_refresh=? WHERE id=?",
                                 (text(str(error) or type(error).__name__, 300), now + min(source["interval"], 300), source["id"]))
                 self.db.commit()
-        self.db.execute("""DELETE FROM stories WHERE id IN (
-            SELECT s.id FROM stories s ORDER BY EXISTS (
-                SELECT 1 FROM story_sources ss JOIN feeds f ON f.id=ss.source_id
-                WHERE ss.story_id=s.id AND f.enabled=1 AND f.kind='hn_weekly'
-                AND ss.published_at BETWEEN ? AND ?) DESC,
-            s.published_at DESC,s.id DESC LIMIT -1 OFFSET ?)""",
-            (self.clock() - HN_WEEK_SECONDS, self.clock(), MAX_STORIES))
+        now = self.clock()
+        # Active arXiv memberships do not spend the other feeds' retention budget.
+        self.db.execute("""WITH weekly AS (
+            SELECT ss.story_id FROM story_sources ss JOIN feeds f ON f.id=ss.source_id
+            WHERE f.enabled=1 AND f.kind='arxiv_weekly'
+                AND ss.published_at BETWEEN ?-f.window_seconds AND ?)
+            DELETE FROM stories WHERE id IN (
+                SELECT s.id FROM stories s WHERE s.id NOT IN (SELECT story_id FROM weekly)
+                ORDER BY EXISTS (
+                    SELECT 1 FROM story_sources ss JOIN feeds f ON f.id=ss.source_id
+                    WHERE ss.story_id=s.id AND f.enabled=1 AND f.kind='hn_weekly'
+                    AND ss.published_at BETWEEN ? AND ?) DESC,
+                s.published_at DESC,s.id DESC LIMIT -1 OFFSET ?)""",
+            (now, now, now - HN_WEEK_SECONDS, now, MAX_STORIES))
         self.db.commit()
 
 

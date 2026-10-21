@@ -5,6 +5,7 @@ local now = 1000
 local runs, summaries, decoded, files = {}, {}, {}, {}
 local gitRuns = {}
 local newsRuns, modelRuns, githubRuns, encoded = {}, {}, {}, {}
+local opsRuns = {}
 -- `tern.kv` stores JSON, so values are copies.
 local store = {}
 local function copy(value)
@@ -30,6 +31,7 @@ local tern = {
 		meter_cell = function(value, thresholds) return { meter = { value = value, thresholds = thresholds } } end,
 	},
 	json = {
+		null = {},
 		array = function(value) return value or {} end,
 		encode = function(value)
 			table.insert(encoded, value)
@@ -40,6 +42,10 @@ local tern = {
 	getenv = function(name) return if name == "HOME" then "/Users/test" else nil end,
 	fs = { exists = function(path) return files[path] == true end },
 	process = { run = function(argv, opts, callback)
+		if argv[#argv] == "/plugin/ops/worker.py" then
+			table.insert(opsRuns, { argv = argv, opts = opts, done = callback })
+			return
+		end
 		if argv[#argv] == "/plugin/news/worker.py" then
 			table.insert(newsRuns, { argv = argv, opts = opts, done = callback })
 			return
@@ -71,6 +77,13 @@ end)()
 local limits = (function()
 -- LIMITS_SOURCE
 end)()
+local opsController = (function()
+-- OPS_CONTROLLER_SOURCE
+end)()
+local opsSection = (function()
+local require = function() return opsController end
+-- OPS_SECTION_SOURCE
+end)()
 local newsSources = (function()
 -- NEWS_SOURCES_SOURCE
 end)()
@@ -101,6 +114,8 @@ local repositoriesSection = (function()
 end)()
 local require = function(path)
 	if path == "./limits" then return limits end
+	if path == "./ops/controller" then return opsController end
+	if path == "./ops/section" then return opsSection end
 	if path == "./news/page" then return newsPage end
 	if path == "./news/controller" then return newsController end
 	if path == "./models/page" then return modelsPage end
@@ -194,10 +209,33 @@ local function page(id)
 	definition.event(state, { ev = "select", id = "main.pages", item = id }, blockCx)
 end
 local selectedBefore = state.selected
+assert(#opsRuns == 0, "Agent ops does not run before Limits is opened")
 page("limits")
 assert(state.page == "limits" and definition.view(state, blockCx).dock == nil)
 assert(definition.key(state, { name = "enter" }, blockCx) == false,
 	"Limits must not activate a hidden agent")
+assert(#opsRuns == 1, "Opening Limits lazily loads host Agent ops")
+local quotaRunsBeforeOps = #runs
+assert(definition.key(state, { name = "r", ctrl = true }, blockCx) == false)
+assert(definition.key(state, { name = "r" }, blockCx) == true)
+assert(#opsRuns == 1 and state.selected == selectedBefore and #runs == quotaRunsBeforeOps,
+	"Limits r coalesces ops refresh without activating agents or rerunning quota")
+decoded.ops = { ok = true, snapshot = {
+	generated_at = 1000,
+	models = { { model_key = "provider/model", tokens_per_second = 24.5, ttft_ms = 1500,
+		avg_output_tokens = 210, effective_samples = 12.5, updated_at = 999 } },
+	commands = { { name = "review", count = 7, last_used_at = 998 } },
+	summary = { measured_models = 1, effective_samples = 12.5, command_uses = 7 }, warnings = {},
+} }
+opsRuns[1].done({ status = 0, stdout = "ops" })
+assert(#opsRuns == 2, "Queued manual refresh follows the active snapshot")
+opsRuns[2].done({ status = 0, stdout = "ops" })
+definition.event(state, { ev = "action", act = "ops-refresh" }, blockCx)
+assert(#opsRuns == 3 and #runs == quotaRunsBeforeOps, "The Limits refresh button refreshes ops only")
+opsRuns[3].done({ status = 0, stdout = "ops" })
+local limitsView = definition.view(state, blockCx)
+assert(limitsView.main.c[2].p.role == "factory-limits" and limitsView.main.c[3].p.role == "factory-ops",
+	"Agent ops appends below quota without moving the existing quota path")
 definition.event(state, { ev = "activate", id = "main.directory.agents", item = "main.directory.agents.p200" }, blockCx)
 assert(state.selected == selectedBefore, "Inactive page events cannot change agent selection")
 page("missing")
