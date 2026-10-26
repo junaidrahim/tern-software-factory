@@ -176,8 +176,9 @@ end
 local function launch(repositories, row, cx, session)
 	if not row then return end
 	if row.missing then repositories.error = "This worktree directory is missing: " .. row.path; return end
+	-- The window needs the block's full id to split it (window.luau's `open_repository`).
 	cx:open("tern-software-factory://" .. (if session then "repo-session/" else "repo-block/")
-		.. string.format("%.0f", cx.pane % 2^44) .. "/" .. encode(row.path))
+		.. string.format("%.0f", cx.pane) .. "/" .. encode(row.path))
 end
 
 local function button(key, label, action, disabled)

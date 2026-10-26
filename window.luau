@@ -48,6 +48,58 @@ local function omp_command()
 	return "omp"
 end
 
+-- The tern CLI of the running app; Tern's own processes need not have
+-- ~/.local/bin on PATH.
+local function tern_command()
+	local bundled = "/Applications/Tern.app/Contents/MacOS/tern"
+	return if tern.fs.exists(bundled) then bundled else "tern"
+end
+
+-- Runs the tern CLI with `args`; success calls `done` with its output, failure
+-- shows `failure` as a toast.
+local function tern_cli(args, failure, done)
+	local argv = { tern_command() }
+	for _, arg in args do table.insert(argv, arg) end
+	tern.process.run(argv, { timeout_ms = 10000 }, function(result, cx)
+		if result.status == 0 and not result.timed_out then
+			if done then done(result.stdout) end
+			return
+		end
+		local line = string.match(result.stderr or "", "[^\n]+") or "exit " .. tostring(result.status)
+		cx:toast("error", failure, line)
+	end)
+end
+
+-- The full id of the pane whose low 44 bits are `pane`, from `tern ls --json`.
+local function listed_id(listing, pane)
+	local ok, data = pcall(tern.json.decode, listing)
+	if not ok or type(data) ~= "table" then return nil end
+	for _, session in data.sessions or {} do
+		for _, tab in session.tabs or {} do
+			for _, block in tab.blocks or {} do
+				if type(block.id) == "number" and block.id % 2^44 == pane then return block.id end
+			end
+		end
+	end
+	return nil
+end
+
+-- Tern's window API cannot focus a pane whose id it shortened (see `key`):
+-- `cx.layout:focus` returns and focus stays put. The CLI takes the full id;
+-- without `full`, `tern ls` supplies it.
+local function focus(cx, pane, full, failure)
+	cx.layout:focus(pane)
+	if cx.session:focused() == pane then return end
+	if full then
+		tern_cli({ "focus", string.format("%.0f", full) }, failure)
+		return
+	end
+	tern_cli({ "ls", "--json" }, failure, function(listing)
+		local id = listed_id(listing, pane)
+		if id then tern_cli({ "focus", string.format("%.0f", id) }, failure) end
+	end)
+end
+
 local function refresh_usage()
 	usage.running, usage.attempted = true, tern.now()
 	local function fail(message)
@@ -328,10 +380,12 @@ local function repository_path(encoded)
 	return path
 end
 
+-- A repository link carries its block's full id, which only the block's host half sees.
 local function open_repository(request, cx)
-	local action, block_key, encoded = request.url:match("^tern%-software%-factory://(repo%-[a-z]+)/(%d+)/(.*)$")
+	local action, block_id, encoded = request.url:match("^tern%-software%-factory://(repo%-[a-z]+)/(%d+)/(.*)$")
 	if action ~= "repo-block" and action ~= "repo-session" then return nil end
-	local block, path = find_block(cx, block_key), repository_path(encoded)
+	local full = tonumber(block_id)
+	local block, path = find_block(cx, key(full)), repository_path(encoded)
 	if not block then return { handled = true } end
 	if not path then
 		cx:toast("error", "Cannot open repository", "Invalid directory path.")
@@ -340,8 +394,18 @@ local function open_repository(request, cx)
 	local ok, problem = pcall(function()
 		if action == "repo-block" then
 			local pane = cx.layout:split(block.pane, "right", { cwd = path })
-			if not pane then error("The Software Factory block is no longer available.") end
-			cx.layout:focus(pane)
+			if pane then
+				focus(cx, pane, nil, "Cannot go to the repository's pane")
+				return
+			end
+			-- Tern's window API cannot split a block whose id it shortened; the CLI
+			-- takes the full id but leaves focus where it was.
+			tern_cli({ "split", string.format("%.0f", full), "right", "--cwd", path, "--json" }, "Cannot open repository", function(output)
+				local decoded, made = pcall(tern.json.decode, output)
+				if decoded and type(made) == "table" and type(made.block) == "number" then
+					tern_cli({ "focus", string.format("%.0f", made.block) }, "Cannot go to the repository's pane")
+				end
+			end)
 		else
 			-- Session creation uses the current host, which need not be this block's.
 			local host = hosts_by_pane(cx)[block.pane]
@@ -355,7 +419,8 @@ local function open_repository(request, cx)
 end
 
 -- Links name the block they come from: Tern reports the focused pane, not the
--- block, as a link's pane when the block opens it.
+-- block, as a link's pane when the block opens it. A `pane` link carries the
+-- agent's full id, which only the block's host half sees.
 tern.route.link(function(request, cx)
 	local repository = open_repository(request, cx)
 	if repository then return repository end
@@ -363,13 +428,14 @@ tern.route.link(function(request, cx)
 	if not id or (action ~= "pane" and action ~= "inspect") then return nil end
 	local block = find_block(cx, block_key)
 	if not block then return { handled = true } end
-	local target = tonumber(id)
+	local full = tonumber(id)
+	local target = full % 2^44
 	local hosts = hosts_by_pane(cx)
 	if hosts[block.pane] ~= nil and hosts[target] == hosts[block.pane] then
 		for _, agent in cx.agents:list() do
 			if agent.pane == target and agent.state ~= "exited" then
 				if action == "pane" then
-					cx.layout:focus(target)
+					focus(cx, target, full, "Cannot go to the agent's pane")
 				else
 					-- The panel of an agent that is not working changes with its state or last message.
 					local cached, now, current = details[target], tern.now(), signature(agent)

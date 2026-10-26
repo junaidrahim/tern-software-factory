@@ -124,13 +124,14 @@ assert(tree.c[2].p.role == "factory-repository-worktree" and tree.c[2].p.label[1
 assert(tree.c[2].p.detail[1].t == "feature/test" and tree.c[3].p.detail[1].t:find("missing", 1, true))
 assert(text(view):find("Skipped unreadable folder", 1, true))
 key(s, "enter")
-assert(opened[#opened] == "tern-software-factory://repo-block/42/%2Fhost%2FCode%2FMy%20repo%25%23%C3%A9%F0%9F%98%80")
+assert(opened[#opened] == "tern-software-factory://repo-block/17592186044458/%2Fhost%2FCode%2FMy%20repo%25%23%C3%A9%F0%9F%98%80",
+	"A repository link carries the block's full id")
 key(s, "enter", { meta = true })
-assert(opened[#opened] == "tern-software-factory://repo-session/42/%2Fhost%2FCode%2FMy%20repo%25%23%C3%A9%F0%9F%98%80")
+assert(opened[#opened] == "tern-software-factory://repo-session/17592186044458/%2Fhost%2FCode%2FMy%20repo%25%23%C3%A9%F0%9F%98%80")
 key(s, "down")
 assert(s.repositories.selected == linked)
 key(s, "enter")
-assert(opened[#opened] == "tern-software-factory://repo-block/42/%2Foutside%2Fwork%20tree")
+assert(opened[#opened] == "tern-software-factory://repo-block/17592186044458/%2Foutside%2Fwork%20tree")
 key(s, "end")
 local launches = #opened
 key(s, "enter")

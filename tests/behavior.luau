@@ -6,6 +6,8 @@ local runs, summaries, decoded, files = {}, {}, {}, {}
 local gitRuns = {}
 local newsRuns, modelRuns, githubRuns, encoded = {}, {}, {}, {}
 local opsRuns = {}
+-- `tern focus` runs; panes Tern's window API shortened, which `cx.layout:focus` cannot focus.
+local focusRuns, shortened = {}, {}
 -- `tern.kv` stores JSON, so values are copies.
 local store = {}
 local function copy(value)
@@ -42,6 +44,10 @@ local tern = {
 	getenv = function(name) return if name == "HOME" then "/Users/test" else nil end,
 	fs = { exists = function(path) return files[path] == true end },
 	process = { run = function(argv, opts, callback)
+		if argv[2] == "focus" then
+			table.insert(focusRuns, { argv = argv, done = callback })
+			return
+		end
 		if argv[#argv] == "/plugin/ops/worker.py" then
 			table.insert(opsRuns, { argv = argv, opts = opts, done = callback })
 			return
@@ -155,6 +161,7 @@ cx = {
 	session = {
 		panes = function() return panes end,
 		tabs = function() return { { id = 10, session = 1 }, { id = 20, session = 2 }, { id = 30, session = 3 } } end,
+		focused = function() return focused end,
 	},
 	sessions = { list = function() return { { id = 1, name = "Main" }, { id = 2, name = "Backend" }, { id = 3, name = "Remote" } } end },
 	hosts = { list = function() return { { id = 1, panes = { 100, 200, 300, 500, 600 } }, { id = 2, panes = { 400 } } } end },
@@ -172,7 +179,7 @@ cx = {
 			}
 		end,
 	},
-	layout = { focus = function(_, pane) focused = pane end },
+	layout = { focus = function(_, pane) if not shortened[pane] then focused = pane end end },
 	toast = function(_, _, message) notice = message end,
 }
 -- One refresh: the window half's timer call, then the host half's poll.
@@ -197,6 +204,18 @@ assert(state.agents[2].title == "omp", "Untitled panes need a useful fallback")
 assert(state.selected == 200)
 key("enter"); open_route()
 assert(focused == 200, "Enter must route to the selected pane, even in another session")
+-- Tern shortens pane ids above 2^44 in the window, where `cx.layout:focus` then does nothing;
+-- the block's host half sees the full id and the window focuses through the CLI.
+local listPanes = tern.pane.list
+tern.pane.list = function() return { { pane = 2^44 + 200 }, { pane = 100 } } end
+shortened[200], focused = true, nil
+key("enter"); open_route()
+assert(focused == nil and #focusRuns == 1 and focusRuns[1].argv[3] == string.format("%.0f", 2^44 + 200),
+	"A pane the window cannot focus is focused by its full id")
+focusRuns[1].done({ status = 1, stderr = "no block is called that\n", timed_out = false }, cx)
+assert(notice == "Cannot go to the agent's pane", "A failed CLI focus says so")
+tern.pane.list, shortened[200], notice = listPanes, nil, nil
+table.clear(focusRuns)
 key("down")
 assert(state.selected == 300)
 agents[2].state = "working"

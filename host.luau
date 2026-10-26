@@ -54,11 +54,21 @@ local function select_entry(state, entry)
 	state.sub = if entry and entry.sub then entry.sub.key else nil
 end
 
+-- Agent rows carry the window's pane ids, which Tern shortens to their low 44
+-- bits; the window needs the full id to focus such a pane (window.luau's
+-- `focus`). This host's pane list has it.
+local function full_id(pane)
+	for _, info in tern.pane.list() do
+		if info.pane % 2^44 == pane then return info.pane end
+	end
+	return pane
+end
+
 -- Tern reports the focused pane, not the block, as a link's pane, so links
 -- name the block.
 local function open_selected(state, cx)
 	if state.selected then
-		cx:open("tern-software-factory://pane/" .. key(cx.pane) .. "/" .. string.format("%.0f", state.selected))
+		cx:open("tern-software-factory://pane/" .. key(cx.pane) .. "/" .. string.format("%.0f", full_id(state.selected)))
 	end
 end
 
