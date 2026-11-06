@@ -12,8 +12,9 @@ local models_controller = require("./models/controller")
 local github = require("./github/page")
 local github_controller = require("./github/controller")
 local repositories = require("./repositories/section")
-local LIST = "main.directory.agents"
-local REFRESH_MS = 1000
+local agents = require("./agents/page")
+-- A block without its first agent list polls the store every LOADING_MS.
+local REFRESH_MS, LOADING_MS = 1000, 200
 
 -- A block's key in `tern.kv` and in links: its pane id's low 44 bits, the part
 -- Tern's window API keeps (see window.luau's `key`).
@@ -26,28 +27,6 @@ local statuses = {
 	idle = { label = "Idle", tone = "muted" },
 	failed = { label = "Failed", tone = "error" },
 }
-
-local function item_id(pane, sub)
-	local id = LIST .. ".p" .. string.format("%.0f", pane)
-	return if sub then id .. ".s" .. sub.key else id
-end
-
--- Rows in display order: each agent, then the subagents of its running tasks.
-local function entries(state)
-	local list = {}
-	for _, agent in state.agents do
-		table.insert(list, { agent = agent })
-		for _, sub in agent.subagents or {} do table.insert(list, { agent = agent, sub = sub }) end
-	end
-	return list
-end
-
-local function selected_index(list, state)
-	for i, entry in list do
-		if entry.agent.pane == state.selected and (entry.sub and entry.sub.key) == state.sub then return i end
-	end
-	return 1
-end
 
 local function select_entry(state, entry)
 	state.selected = if entry then entry.agent.pane else nil
@@ -156,30 +135,6 @@ local function running_subagents(agent)
 		if sub.status == "running" then count += 1 end
 	end
 	return count
-end
-
--- Where an agent works, as sent by the window; "—" before its cwd is known.
-local function work_path(agent)
-	local path = plain(agent.path or "")
-	return if path ~= "" then path else "—"
-end
-
-local function sub_row(agent, sub)
-	local status = sub_status(sub)
-	local kind = plain(sub.agent)
-	local name, doing, summary = plain(sub.name), sub_doing(sub), sub_summary(sub, false)
-	return ui.node("item", {
-		key = "p" .. string.format("%.0f", agent.pane) .. ".s" .. sub.key,
-		role = "factory-subagent",
-		label = {
-			ui.span("↳ " .. (if kind ~= "" then kind else "subagent"), "muted"),
-			ui.span(name, "strong"), ui.span(doing, "muted"), ui.span(summary, "muted"),
-		},
-		detail = { ui.span("●", status.tone), ui.span(status.label, status.tone) },
-		tone = status.tone,
-		title = name .. "\n" .. kind .. " · " .. plain(sub.model) .. "\n" .. status.label .. "\n" .. doing .. "\n" .. sub_summary(sub, true),
-		aria = "Subagent " .. name .. ", " .. status.label .. ", " .. doing .. ", " .. summary,
-	})
 end
 
 -- The summary of recent activity; the omp session title until the first one arrives.
@@ -312,23 +267,44 @@ local function sub_activity(state, agent, sub)
 	return panel(plain(sub.name), sub_status(sub), meta, body)
 end
 
+-- Entries time events on the window's clock and carry that clock as `clock`
+-- when written; `shift` moves such a time onto this half's clock.
+local function shift(data)
+	return if type(data.clock) == "number" then tern.now() - data.clock else 0
+end
+
+-- Ages shown in the view, refreshed each poll: an entry is written only when it changes.
+local function age(state)
+	local now = tern.now()
+	local function seconds(at) return if at then math.max(0, math.floor((now - at) / 1000)) else nil end
+	for _, agent in state.agents do agent.finished_seconds = seconds(agent.finished_here) end
+	if state.usage then state.usage.age_ms = if state.usage.at_here then now - state.usage.at_here else 0 end
+	if state.details then state.details.finished_seconds = seconds(state.details.finished_here) end
+end
+
 local function apply_snapshot(state, data, cx)
-	local previous = selected_index(entries(state), state)
+	local offset = shift(data)
 	state.agents = data.agents or {}
+	for _, agent in state.agents do
+		if agent.finished_at then agent.finished_here = agent.finished_at + offset end
+	end
 	state.usage = data.usage
+	if state.usage and state.usage.at then state.usage.at_here = state.usage.at + offset end
 	state.loaded = true
-	local list = entries(state)
-	local agent_found, entry_found = false, false
-	for _, entry in list do
-		if entry.agent.pane == state.selected then
+	local agent_found, sub_found = false, false
+	for _, agent in state.agents do
+		if agent.pane == state.selected then
 			agent_found = true
-			if (entry.sub and entry.sub.key) == state.sub then entry_found = true end
+			for _, sub in agent.subagents or {} do
+				if sub.key == state.sub then sub_found = true end
+			end
 		end
 	end
-	-- A finished task drops its subagents; keep the selection on their agent.
+	-- The Agents page's cursor falls back to the repository of an agent that left;
+	-- a finished task drops its subagents, leaving their agent selected.
 	if not agent_found then
-		select_entry(state, list[math.min(previous, #list)])
-	elseif not entry_found then
+		select_entry(state, nil)
+	elseif state.sub and not sub_found then
 		state.sub = nil
 	end
 	if state.page == "agents" then inspect_selected(state, cx) end
@@ -336,9 +312,16 @@ end
 
 -- Per open block: its state and cx, and the `seq` of the snapshot and details it applied.
 local blocks = {}
+-- The pending poll, rescheduled sooner when a block opens.
+local next_poll, poll
 
-local function poll()
-	local open = {}
+local function schedule(ms)
+	if next_poll then next_poll:cancel() end
+	next_poll = tern.timer(ms, poll)
+end
+
+function poll()
+	local open, loading = {}, false
 	for _, pane in tern.pane.list() do open[pane.pane] = true end
 	for pane, block in blocks do
 		local id = key(pane)
@@ -362,145 +345,40 @@ local function poll()
 			block.details = details.seq
 			-- A late reply for a previous selection must not replace the current one.
 			if type(details.details) == "table" and details.details.pane == block.state.selected then
-				block.state.details, changed = details.details, true
+				local value = details.details
+				if value.finished_at then value.finished_here = value.finished_at + shift(details) end
+				block.state.details, changed = value, true
 			end
 		end
 		refresh_projects(block.state, block.cx)
+		if block.state.loaded then
+			-- Ages advance without a new entry.
+			age(block.state)
+			changed = true
+		else
+			loading = true
+		end
 		if changed then pcall(function() block.cx:render() end) end
 	end
 	news_controller.tick()
 	models_controller.tick()
 	ops_controller.tick()
-	tern.timer(REFRESH_MS, poll)
+	schedule(if loading then LOADING_MS else REFRESH_MS)
 end
 
-local agents_page = {
-	view = function(state, cx)
-		local rows = {}
-		local counts = { working = 0, waiting_input = 0, idle = 0, failed = 0 }
-		local subagents = 0
-		for _, agent in state.agents do
-			local status = row_status(agent)
-			local category = if status.tone == "error" then "failed" else agent.state
-			if counts[category] then counts[category] += 1 end
-			local running = running_subagents(agent)
-			subagents += running
-			local note = if running > 0 then status.note .. " · " .. tostring(running) .. (if running == 1 then " subagent" else " subagents") else status.note
-			local session = plain(agent.session)
-			local title = plain(agent.title)
-			local task = agent_task(agent)
-			local model = plain(agent.model or "")
-			if model == "" then model = "Model not reported" end
-			local cwd = plain(agent.cwd)
-			local project = project_of(state, agent.cwd)
-			local path = work_path(agent)
-			local work_dir = plain(agent.work_dir or "")
-			-- Delivery errors replace the task; they need attention first.
-			local doing = if agent.delivery_error and agent.delivery_error ~= "" then plain(agent.delivery_error) else task
-			table.insert(rows, ui.node("item", {
-				key = "p" .. string.format("%.0f", agent.pane),
-				-- An untoned span renders as a bare text node, which cannot ellipsize.
-				label = { ui.span(session, "muted"), ui.span(project, "strong"), ui.span(doing, "task") },
-				detail = { ui.span("●", status.tone), ui.span(status.label, status.tone), ui.span(note, "muted") },
-				tone = status.tone,
-				title = session .. "\n" .. project .. "\n" .. doing .. "\nSession: " .. title .. "\n" .. model
-					.. "\n" .. status.label .. " · " .. note .. "\nPath: " .. (if work_dir ~= "" then work_dir else path)
-					.. "\nWorking directory: " .. cwd,
-				aria = session .. ", " .. project .. ", " .. doing .. ", " .. status.label .. ", " .. note .. ", " .. model,
-			}))
-			for _, sub in agent.subagents or {} do table.insert(rows, sub_row(agent, sub)) end
-		end
-		local list = entries(state)
-		local entry = list[selected_index(list, state)]
-		local selected = entry and entry.agent
-		local heading = {
-			ui.text({ ui.span("Agents", "bold") }),
-			ui.badge(if state.repositories.section == "agents" then "Keyboard active" else "Tab to focus", "muted"),
-			ui.badge(if state.loaded then tostring(#state.agents) else "…", "muted"),
-		}
-		for _, name in { "working", "waiting_input", "failed", "idle" } do
-			if counts[name] > 0 then table.insert(heading, ui.badge(tostring(counts[name]) .. " " .. statuses[name].label, statuses[name].tone)) end
-		end
-		if subagents > 0 then
-			table.insert(heading, ui.badge(tostring(subagents) .. (if subagents == 1 then " subagent" else " subagents"), "accent"))
-		end
-		return {
-			main = ui.node("col", {}, {
-				ui.node("row", { role = "factory-heading" }, heading),
-				ui.text({ ui.span("Across all sessions on this host", "muted") }),
-				ui.node("col", { key = "directory", role = "factory-grid" }, {
-					ui.node("row", { role = "factory-columns" }, {
-						ui.node("row", { role = "factory-identifiers" }, {
-							ui.text("Tern session"), ui.text("Project"), ui.text("Agent task"),
-						}),
-						ui.text("Status"),
-					}),
-					ui.node("list", {
-						key = "agents",
-						selected = if entry then item_id(entry.agent.pane, entry.sub) else nil,
-						empty = { ui.span(if state.loaded then "No agents are running on this host." else "Loading agents…", "muted") },
-						max = 0.35,
-					}, rows),
-				}),
-				if entry and entry.sub then sub_activity(state, entry.agent, entry.sub)
-					elseif selected then activity(state, selected)
-					else ui.text({ ui.span("Open an omp agent block to see its activity here.", "muted") }),
-				repositories.view(state),
-			}),
-			layer = repositories.layer(state),
-			dock = ui.node("col", { role = "factory-footer" }, {
-				ui.text({ ui.span(if state.repositories.section == "repositories"
-					then state.repositories.selected or state.repositories.root
-					elseif selected then selected.cwd else "Open an agent in Tern to see it here.", "muted") }),
-				ui.text({ ui.span(if state.repositories.section == "repositories"
-					then "Tab Agents · ↑ ↓ Select · Enter Shell block · Cmd+Enter New session · r Refresh"
-					else "Tab Repositories · ↑ ↓ Select · Enter Go to pane", "muted") }),
-			}),
-		}
-	end,
-	key = function(state, key, cx)
-		if repositories.key(state, key, cx) then return true end
-		if state.repositories.section == "repositories" then return false end
-		if key.ctrl or key.alt or key.meta then return false end
-		local list = entries(state)
-		local count = #list
-		if count == 0 then return false end
-		local index = selected_index(list, state)
-		if key.name == "down" or key.name == "j" then index = math.min(count, index + 1)
-		elseif key.name == "up" or key.name == "k" then index = math.max(1, index - 1)
-		elseif key.name == "home" then index = 1
-		elseif key.name == "end" then index = count
-		elseif key.name == "page_down" then index = math.min(count, index + 10)
-		elseif key.name == "page_up" then index = math.max(1, index - 10)
-		elseif key.name == "enter" then open_selected(state, cx); return true
-		else return false end
-		select_entry(state, list[index])
-		inspect_selected(state, cx)
-		return true
-	end,
-	event = function(state, event, cx)
-		if repositories.event(state, event, cx) then return end
-		if (event.ev == "select" or event.ev == "activate") and event.id == LIST then
-			for _, entry in entries(state) do
-				if item_id(entry.agent.pane, entry.sub) == event.item then
-					state.repositories.section = "agents"
-					select_entry(state, entry)
-					inspect_selected(state, cx)
-					if event.ev == "activate" then open_selected(state, cx) end
-					return
-				end
-			end
-		end
-	end,
-}
+local agents_page = agents.create({
+	plain = plain, statuses = statuses, row_status = row_status, agent_task = agent_task,
+	running_subagents = running_subagents, sub_status = sub_status, sub_doing = sub_doing, sub_summary = sub_summary,
+	panel = panel, section = section, note = note, activity = activity, sub_activity = sub_activity,
+	select_entry = select_entry, inspect_selected = inspect_selected, open_selected = open_selected,
+	block_key = key, repositories = repositories,
+})
 
 -- Register pages here. Each supplies a view and optional key/event handlers.
--- Views return region containers; the shell adds navigation to main.
+-- Views return region containers; the shell adds navigation to main. A page's
+-- `init` result lives in `state[page.state or page.id]`.
 local pages = {
-	{
-		id = "agents", label = "Agents", init = repositories.init, save = repositories.save, enter = repositories.enter,
-		view = agents_page.view, key = agents_page.key, event = agents_page.event, capture_key = repositories.capture_key,
-	},
+	agents_page,
 	{
 		id = "limits", label = "Limits", enter = ops.enter, key = ops.key, event = ops.event,
 		view = function(state)
@@ -539,13 +417,15 @@ tern.block.define("agents", {
 		local page = if type(saved) == "table" and page_by_id[saved.page] then saved.page else pages[1].id
 		local state = { page = page, agents = {}, projects = {}, selected = nil, loaded = false }
 		local saved_pages = if type(saved) == "table" and type(saved.pages) == "table" then saved.pages else {}
+		-- The repository root and scan, shown by Agents.
+		state.repositories = repositories.init(saved_pages.agents)
 		for _, entry in pages do
 			if entry.init then
-				if entry.id == "agents" then state.repositories = entry.init(saved_pages[entry.id])
-				else state[entry.id] = entry.init(saved_pages[entry.id]) end
+				state[entry.state or entry.id] = entry.init(saved_pages[entry.id])
 			end
 		end
 		blocks[cx.pane] = { state = state, cx = cx }
+		schedule(LOADING_MS)
 		if page_by_id[page].enter then page_by_id[page].enter(state, cx) end
 		return state
 	end,
@@ -591,4 +471,4 @@ tern.block.define("agents", {
 	end,
 })
 
-tern.timer(REFRESH_MS, poll)
+schedule(0)

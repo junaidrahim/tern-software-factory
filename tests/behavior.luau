@@ -118,6 +118,16 @@ end)()
 local repositoriesSection = (function()
 -- REPOSITORIES_SECTION_SOURCE
 end)()
+local agentsTree = (function()
+-- AGENTS_TREE_SOURCE
+end)()
+local agentsPage = (function()
+local require = function() return agentsTree end
+-- AGENTS_PAGE_SOURCE
+end)()
+local agentsCarly = (function()
+-- AGENTS_CARLY_SOURCE
+end)()
 local require = function(path)
 	if path == "./limits" then return limits end
 	if path == "./ops/controller" then return opsController end
@@ -129,6 +139,8 @@ local require = function(path)
 	if path == "./github/page" then return githubPage end
 	if path == "./github/controller" then return githubController end
 	if path == "./repositories/section" then return repositoriesSection end
+	if path == "./agents/page" then return agentsPage end
+	if path == "./agents/carly" then return agentsCarly end
 	return tracking
 end
 do
@@ -182,10 +194,12 @@ cx = {
 	layout = { focus = function(_, pane) if not shortened[pane] then focused = pane end end },
 	toast = function(_, _, message) notice = message end,
 }
--- One refresh: the window half's timer call, then the host half's poll.
+-- One refresh: the window half's timer calls until its refresh completes, then the host half's poll.
 tick = function(c)
-	local window = windowTick
-	window(c)
+	repeat
+		local window = windowTick
+		window(c)
+	until tickDelay == 1000
 	local host = hostTick
 	host()
 end
@@ -201,6 +215,9 @@ assert(#warnings == 0)
 assert(#state.agents == 2, "Include all sessions on this host, excluding remote and exited agents")
 assert(state.agents[1].session == "Backend" and state.agents[2].session == "Main")
 assert(state.agents[2].title == "omp", "Untitled panes need a useful fallback")
+-- Without a root folder every agent is under Other agents, where the cursor starts.
+assert(state.selected == nil)
+key("down")
 assert(state.selected == 200)
 key("enter"); open_route()
 assert(focused == 200, "Enter must route to the selected pane, even in another session")
@@ -224,6 +241,14 @@ tick(cx)
 assert(state.selected == 300, "Refreshing status or titles must preserve selection")
 local view = definition.view(state, blockCx)
 local function list(v) return v.main.c[4].c[2] end
+local function pick(item)
+	definition.event(state, { ev = "select", id = "main.tree.rows", item = "main.tree.rows." .. item }, blockCx)
+end
+local function activity_of(v)
+	for _, child in v.main.c do
+		if child.p and child.p.role == "factory-activity" then return child end
+	end
+end
 local function page(id)
 	definition.event(state, { ev = "select", id = "main.pages", item = id }, blockCx)
 end
@@ -255,7 +280,7 @@ opsRuns[3].done({ status = 0, stdout = "ops" })
 local limitsView = definition.view(state, blockCx)
 assert(limitsView.main.c[2].p.role == "factory-limits" and limitsView.main.c[3].p.role == "factory-ops",
 	"Agent ops appends below quota without moving the existing quota path")
-definition.event(state, { ev = "activate", id = "main.directory.agents", item = "main.directory.agents.p200" }, blockCx)
+definition.event(state, { ev = "activate", id = "main.tree.rows", item = "main.tree.rows.a200" }, blockCx)
 assert(state.selected == selectedBefore, "Inactive page events cannot change agent selection")
 page("missing")
 assert(state.page == "limits", "Unknown tabs do not replace the active page")
@@ -283,7 +308,7 @@ local githubSaved = definition.save(state)
 assert(githubSaved.page == "github" and githubSaved.pages.github.root == nil)
 local githubRestored = definition.init(blockContext(997, function() end), {}, githubSaved)
 assert(githubRestored.page == "github" and #githubRuns == 1, "Saved GitHub reuses the host snapshot without an automatic retry")
-definition.event(state, { ev = "activate", id = "main.directory.agents", item = "main.directory.agents.p200" }, blockCx)
+definition.event(state, { ev = "activate", id = "main.tree.rows", item = "main.tree.rows.a200" }, blockCx)
 assert(state.selected == selectedBefore, "GitHub ignores inactive agent row events")
 store["repositories:root"] = nil
 key("right")
@@ -291,45 +316,38 @@ assert(state.page == "agents" and state.selected == selectedBefore, "Tab cycling
 key("left")
 assert(state.page == "github", "Previous tab wraps to the appended GitHub page")
 page("agents")
-key("tab")
-assert(state.repositories.section == "repositories" and state.page == "agents")
-key("down")
-assert(state.selected == selectedBefore, "Repository navigation cannot change the agent selection")
-page("limits")
-key("tab")
-assert(state.repositories.section == "repositories", "Repository section shortcuts are inactive on other pages")
-page("agents")
 definition.event(state, { ev = "action", act = "repositories-root" }, blockCx)
 key("right")
 assert(state.page == "agents" and state.repositories.editor ~= nil, "Root editor captures arrows before page navigation")
 key("escape")
 assert(state.repositories.editor == nil)
-key("tab")
-assert(state.repositories.section == "agents")
 key("left")
 assert(state.page == "github", "Page arrows resume after the root editor closes")
 page("agents")
-assert(#list(view).c == 2 and list(view).p.selected == "main.directory.agents.p300")
-assert(list(view).c[1].p.tone == "error", "Prompt delivery failures need an attention indicator")
-local first = list(view).c[1].p.label
-assert(first[3].t == "Prompt could not be sent", "Delivery errors replace the task")
+assert(#list(view).c == 3 and list(view).c[1].p.key == "other" and list(view).p.selected == "main.tree.rows.a300")
+assert(list(view).c[2].p.tone == "error", "Prompt delivery failures need an attention indicator")
+local first = list(view).c[2].p.label
+assert(first[1].t == "Prompt could not be sent", "Delivery errors replace the task")
 assert(state.agents[1].work_dir == "/code/backend/src",
 	"A relative edit target resolves against the agent's cwd, without its line suffix")
 assert(state.agents[2].work_dir == "/code/website",
 	"An agent that changed nothing works in its cwd")
-assert(list(view).c[2].p.label[3].t == "omp", "The session title stands in until a summary arrives")
-assert(first[2].t == "—", "An unresolved repository must not show the cwd's name")
+assert(list(view).c[3].p.label[1].t == "omp", "The session title stands in until a summary arrives")
+assert(first[2].t == "/code/backend" and first[3].t == "Backend",
+	"An agent outside every repository shows its working directory and session")
 for _, run in gitRuns do
 	run.done({ status = if run.argv[3] == "/code/backend" then 0 else 128,
 		stdout = "/code/\n", timed_out = false })
 end
-view = definition.view(state, blockCx)
-assert(list(view).c[1].p.label[2].t == "code", "Project uses the repository root, not the cwd basename")
-assert(list(view).c[2].p.label[2].t == "—", "A directory outside Git has no project")
-assert(string.find(list(view).c[1].p.title, "Session: Renamed task", 1, true), "Icon glyphs must not reach row text")
-definition.event(state, { ev = "select", id = "main.directory.agents", item = "main.directory.agents.p200" }, blockCx)
+pick("a200")
 assert(state.selected == 200)
-definition.event(state, { ev = "activate", id = "main.directory.agents", item = "main.directory.agents.p300" }, blockCx)
+local panel = activity_of(definition.view(state, blockCx))
+assert(panel.c[1].c[1].p.text[1].t == "Renamed task", "Icon glyphs must not reach the activity title")
+assert(panel.c[2].c[1].p.text[1].t:find("Backend · code", 1, true), "The panel names the repository root, not the cwd basename")
+pick("a300")
+panel = activity_of(definition.view(state, blockCx))
+assert(panel.c[2].c[1].p.text[1].t:find("Main · —", 1, true), "A directory outside Git has no project")
+definition.event(state, { ev = "activate", id = "main.tree.rows", item = "main.tree.rows.a300" }, blockCx)
 open_route()
 assert(focused == 300, "Double-click must open the clicked agent")
 agents[2].state = "exited"
@@ -337,7 +355,8 @@ focused = nil
 key("enter"); open_route()
 assert(focused == nil and notice, "An exited selection must never focus a stale pane")
 tick(cx)
-assert(#state.agents == 1 and state.selected == 200)
+assert(#state.agents == 1 and state.selected == nil, "An agent that exits leaves the selection")
+assert(list(definition.view(state, blockCx)).p.selected == "main.tree.rows.other", "The cursor falls back to the agent's group")
 assert(route({ pane = 100, url = "https://example.com" }, cx) == nil)
 route({ pane = 100, url = "tern-software-factory://pane/100/400" }, cx)
 assert(focused == nil, "Navigation must stay on the block's host")
@@ -353,6 +372,7 @@ definition.view(state, blockCx)
 agents = {{ pane = 200, state = "working", cwd = "/code/backend", model = "Test model" }}
 agents[1].last_message = "**Fixed** `parser_case`.\nTests passing."
 tick(cx)
+pick("a200")
 open_route()
 assert(state.agents[1].preview == "Fixed parser_case. Tests passing.")
 assert(state.details.response == "Fixed the parser.")
@@ -370,11 +390,11 @@ assert(state.agents[1].last_turn == "failed" and state.agents[1].finished_second
 agents[1].state = "idle"
 tick(cx)
 view = definition.view(state, blockCx)
-assert(list(view).c[1].p.tone == "error", "Failed turns must stand out in the row")
+assert(list(view).c[2].p.tone == "error", "Failed turns must stand out in the row")
 agents[1].state = "working"
 tick(cx)
 view = definition.view(state, blockCx)
-assert(list(view).c[1].p.tone == "accent", "A new working turn must use the working signal")
+assert(list(view).c[2].p.tone == "accent", "A new working turn must use the working signal")
 -- Repeated requests inside a second share one transcript read.
 cx.agents.transcript = function() error("Not ready") end
 open_route()
@@ -427,23 +447,19 @@ assert(#subs == 2 and subs[1].name == "Alpha" and subs[2].name == "Zed", "Subage
 assert(subs[1].elapsed_ms == 95000 and subs[2].elapsed_ms == 103483, "Running subagents take their task card's age")
 view = definition.view(state, blockCx)
 local rows = list(view).c
-assert(#rows == 3 and rows[2].p.role == "factory-subagent" and rows[3].p.role == "factory-subagent")
-assert(rows[2].p.label[2].t == "Alpha" and rows[2].p.label[3].t == "bash · Running tests", "Show the running tool")
-assert(rows[3].p.label[3].t == "No activity yet" and rows[3].p.detail[2].t == "Done")
-assert(string.find(rows[1].p.detail[3].t, "1 subagent", 1, true), "The agent row counts running subagents")
+assert(#rows == 4 and rows[3].p.role == "factory-tree-sub" and rows[4].p.role == "factory-tree-sub")
+assert(rows[3].p.label[1].t == "↳ Alpha · task" and rows[3].p.label[2].t == "bash · Running tests", "Show the running tool")
+assert(rows[4].p.label[2].t == "No activity yet" and rows[4].p.detail[2].t == "Done")
+assert(string.find(rows[2].p.detail[3].t, "1 subagent", 1, true), "The agent row counts running subagents")
 key("down")
 assert(state.selected == 200 and state.sub == "43_Alpha", "Subagent rows are selectable")
 view = definition.view(state, blockCx)
-assert(list(view).p.selected == "main.directory.agents.p200.s43_Alpha")
-local activityPanel
-for _, child in view.main.c do
-	if child.p and child.p.role == "factory-activity" then activityPanel = child end
-end
-assert(activityPanel.c[1].c[1].p.text[1].t == "Alpha", "The activity panel shows the selected subagent")
+assert(list(view).p.selected == "main.tree.rows.a200.s43_Alpha")
+assert(activity_of(view).c[1].c[1].p.text[1].t == "Alpha", "The activity panel shows the selected subagent")
 focused = nil
 key("enter"); open_route()
 assert(focused == 200, "Enter on a subagent goes to its agent's pane")
-definition.event(state, { ev = "select", id = "main.directory.agents", item = "main.directory.agents.p200.s43_Zed" }, blockCx)
+pick("a200.s43_Zed")
 assert(state.selected == 200 and state.sub == "43_Zed")
 cards[2].p.status = "done"
 tick(cx)
@@ -478,10 +494,9 @@ assert(state.agents[1].path == "~/My notes/" and state.agents[1].work_dir == "/U
 changes = { { role = "assistant", text = "", tools = { { name = "write", status = "done", targetKind = "path",
 	target = "tern-software-factory/tests/fixtures/deep/case.luau" } } } }
 tick(cx)
-local deep = list(definition.view(state, blockCx)).c[1].p
 assert(state.agents[1].path == "tern-software-factory/tests/fixtures/deep/"
-	and string.find(deep.title, "Path: /code/backend/tern-software-factory/tests/fixtures/deep", 1, true),
-	"A long path appears in full in the tooltip")
+	and state.agents[1].work_dir == "/code/backend/tern-software-factory/tests/fixtures/deep",
+	"A long path keeps its whole directory")
 changes = { { role = "assistant", text = "", tools = { { name = "ast_edit", status = "done", targetKind = "path", target = "lib/**/*.luau" } } } }
 tick(cx)
 assert(state.agents[1].path == "lib/", "A glob names its fixed directory")
@@ -605,6 +620,7 @@ assert(state.agents[1].state == "idle" and #warnings == 0, "Live blocks still up
 table.remove(panes, 1)
 -- Tern disables a window timer until reload once one call runs past 50 ms, which froze
 -- every open block. Slow reads spread over timer calls, and each block gets its snapshot.
+-- A read that ends just under the slice must not be followed by another in the same call.
 -- Tern's window API also shortens pane ids above 2^44: the window sees this block as 800,
 -- while the block's real id (its host cx.pane) is 2^44 + 800.
 local second = { pane = 800, kind = "plugin", block = "tern-software-factory.agents", tab = 10 }
@@ -615,22 +631,29 @@ local listPanes = tern.pane.list
 tern.pane.list = function() return { block, { pane = 2^44 + 800 } } end
 local listHosts, readSurface = cx.hosts.list, cx.session.surface
 cx.hosts.list = function() return { { id = 1, panes = { 100, 200, 300, 500, 600, 800 } }, { id = 2, panes = { 400 } } } end
-cx.agents.transcript = function() now += 30; return {} end
-cx.session.surface = function() now += 30; error("Surface unavailable") end
+local listedBeforeReads
+cx.agents.transcript = function()
+	if listedBeforeReads == nil then listedBeforeReads = store["snapshot:800"] ~= nil end
+	now += 19
+	return {}
+end
+cx.session.surface = function() now += 31; error("Surface unavailable") end
 agents[1].state = "working"
 local calls = 0
 repeat
 	local started = now
-	tick(cx)
+	local window = windowTick
+	window(cx)
 	calls += 1
 	assert(now - started < 50, "No timer call may run past Tern's 50 ms budget")
 until tickDelay == 1000
+hostTick()
 assert(calls > 1 and state.agents[1].state == "working" and secondState.agents[1].state == "working",
 	"Every open block refreshes, including one whose id Tern shortens")
+assert(listedBeforeReads, "A newly opened block gets its list before the agents' reads")
 local slow = {}
 for _, warning in warnings do slow[warning[1]] = true end
-assert(slow["Slow refresh step: transcript 200 took 30 ms"] and slow["Slow refresh step: subagents 200 took 30 ms"],
-	"A step that nears the budget is logged by name")
+assert(slow["Slow refresh step: subagents 200 took 31 ms"], "A step that nears the budget is logged by name")
 table.clear(warnings)
 assert(store["snapshot:800"] ~= nil, "A block's entries are keyed by the low 44 bits of its id")
 -- A closed block's entries leave the store, and so do those of a block whose program exited.
@@ -658,6 +681,18 @@ now += 5000
 open_route()
 assert(reads == 2 and state.details.finished_seconds == panelAge + 5,
 	"An idle agent's panel is read once until it changes, and its turn age still advances")
+-- Each store write rewrites kv.json and can take most of Tern's budget: an unchanged list
+-- is not written again, and the block still advances its ages.
+local kvSet, writes = tern.kv.set, 0
+tern.kv.set = function(name, value) writes += 1; kvSet(name, value) end
+local finishedRow
+for _, row in state.agents do if row.finished_seconds then finishedRow = row end end
+local rowAge = finishedRow.finished_seconds
+now += 3000
+tick(cx)
+assert(writes == 0 and finishedRow.finished_seconds == rowAge + 3,
+	"An unchanged list is not written again, and its ages still advance")
+tern.kv.set = kvSet
 agents[1].last_message = "Done again."
 tick(cx)
 assert(reads == 3, "A new last message is read")
@@ -680,15 +715,18 @@ cx.hosts.list = function() return { { id = 1, kind = "local", panes = localPanes
 tick(cx)
 key("end")
 view = definition.view(state, blockCx)
-assert(#list(view).c == 250 and list(view).p.selected == "main.directory.agents.p8589934842")
+assert(#list(view).c == 251 and list(view).p.selected == "main.tree.rows.a8589934842")
 key("enter"); open_route()
 assert(focused == 8589934842)
 key("home"); key("page_down")
-assert(state.selected == 8589934603)
+assert(state.selected == 8589934602, "Page down moves ten rows, counting the group row")
 cx.agents.list = function() error("Host disconnected") end
-local callback = windowTick
-windowTick = nil
-callback(cx)
-assert(windowTick ~= nil and #warnings == 1, "A failed refresh must still schedule its successor")
+repeat
+	local callback = windowTick
+	windowTick = nil
+	callback(cx)
+	assert(windowTick ~= nil, "A failed refresh must still schedule its successor")
+until tickDelay == 1000
+assert(#warnings == 1, "A failed discovery step ends the refresh")
 print("PASS: native discovery, host scope, cross-session navigation, selection, exits, empty and 250 agents")
 print("PASS: omp activity, working paths, subagents, Claude and Codex limits, completion, cache, null metadata, bounded Unicode text and stale detail replies")

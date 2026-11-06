@@ -8,7 +8,7 @@ comparing AI models, and browsing GitHub pull requests—all in one multi-page b
 
 | Page | What it provides |
 | --- | --- |
-| [Agents](#agents) | Live agents and subagents across sessions on the same host, activity summaries, and pane navigation. A nested repository/worktree list opens shell blocks or new sessions. |
+| [Agents](#agents) | Live agents and subagents across sessions on the same host, grouped by repository with the worktree each one uses. Activity summaries, pane navigation, terminals and sessions in a repository, and Carly requests to start an agent there. |
 | [Limits](#limits) | Claude and Codex account usage limits, plus local agent performance and recorded command statistics. |
 | [News](#news) | A compact headline feed with source filters and direct article links. Includes Anthropic engineering, claude.dev, and OpenAI. |
 | [Models](#models) | Artificial Analysis intelligence, coding, and agentic scores, generation speed, and token prices. |
@@ -67,119 +67,107 @@ only act on Agents; arrows edit the caret while News or Models search is active.
 
 ### Agents
 
-The list updates each second. It shows agents from all sessions on the block's
-host. The columns are **Tern session**, **Status**, **Project**,
-and **Agent task**. Columns shrink with the pane, with compact spacing; panes
-narrower than the 420px table minimum scroll horizontally. Working, waiting, and idle
-agents stay in the list. Exited agents leave the list. The plugin reads a
-working agent's chat and subagents each second; a waiting or idle agent's chat
-only when its state or latest message changes.
+Agents shows the agents from all sessions on the block's host as a tree, updated
+each second. Each repository under the saved root folder is a row, with the
+agents working in it below. An agent belongs to the checkout (the main checkout
+or a linked worktree) that most closely contains its working directory, so a
+worktree nested inside its repository, such as `.claude/worktrees/…`, claims its
+own agents. Repositories with agents come first, then **Other agents** (working
+outside the root folder), then repositories without agents, dimmed. Paths under
+your home directory are shown as `~`.
 
-Each agent is one compact line. **Project** is the basename of the Git repository
-root containing the agent's working directory, resolved with `git rev-parse
---show-toplevel` on that host. Starting in a subdirectory still shows the repository
-name. Linked worktrees show their worktree root's name. Results refresh once a
-minute; unresolved directories and directories outside Git show `—`.
-
-The detail panel and row tooltip retain the directory of the file the agent changed
-most recently, read from omp's structured chat: the target of its latest non-error
-`edit`, `write`, or `ast_edit` call (omp's `file://` link when it has one, else
-the target resolved against the working directory). Reads, failed edits, MCP
-tool calls, and shell commands do not count. Paths inside the working directory
-are relative (`./` is the working directory itself, `src/lib/` a subdirectory);
-others start from `~` or `/`. Until the agent changes a file, this path is `./`.
-The plugin remembers the latest path for each agent until the agent exits. When
-it first sees an agent, including after a reload, it looks back over the last 200
-chat messages for the newest change.
+Agent rows show **Agent task**, **Worktree** (the worktree's folder name and
+branch, or `main checkout` and the branch; the working directory for other
+agents), **Session**, and **Status**. Working, waiting, and idle agents stay in
+the list; exited agents leave it. The plugin reads a working agent's chat and
+subagents each second; a waiting or idle agent's chat only when its state or
+latest message changes. A repository row shows its main checkout's branch, how
+many worktrees it has, and how many of its agents are working, waiting, and idle.
 
 **Agent task** is a one-sentence summary of what the agent did in the last three
 minutes; it shows the omp session title until the first summary arrives, and a
-prompt delivery error when there is one. The row tooltip shows the session
-title, model, full path, and working directory. Rows leave
-out Nerd Font icons, such as the one omp puts before its session titles. A
-pulsing dot marks working agents. Amber pulses mark agents that need input; red
-pulses mark failed turns or prompt delivery.
+prompt delivery error when there is one. Rows leave out Nerd Font icons, such as
+the one omp puts before its session titles. A pulsing dot marks working agents.
+Amber pulses mark agents that need input; red pulses mark failed turns or prompt
+delivery. Idle dots stay still. The pulses respect Tern's Reduce Motion setting
+and stop when the pane is hidden.
 
 To write the agent task, the plugin notes each chat step (requests, replies, and
 tool calls) when it first appears in an agent's omp chat. When an agent has new
 steps, at most once a minute, it sends the steps from the last three minutes (up
 to 3,500 characters) to omp's fast model with `omp -p --model @smol`, without
-tools or a saved
-session, and shows the first sentence of the reply. One summary runs at a time,
-for the agent whose summary is oldest. Idle agents keep their last summary, and
-a failed summary keeps the previous one. Summaries reset when the plugin reloads.
+tools or a saved session, and shows the first sentence of the reply. One summary
+runs at a time, for the agent whose summary is oldest. Idle agents keep their
+last summary, and a failed summary keeps the previous one. Summaries reset when
+the plugin reloads.
 
-While an omp task runs, each of its subagents gets a compact line under the
-agent: the subagent type, name, current tool or
-assignment, status, model, tokens, and run time. The agent's status notes how
-many subagents are running.
-Select a subagent row to see its context use, cost, requests, tool count,
-thinking level, and assignment. Enter goes to the parent agent's pane.
-Subagent rows leave when their task finishes.
+While an omp task runs, each of its subagents gets a line under the agent: name,
+type, current tool or assignment, status, model, tokens, and run time. The
+agent's status notes how many subagents are running. Subagent rows leave when
+their task finishes.
 
-Idle dots stay still. The pulses respect Tern's Reduce Motion setting and stop
-when the pane is hidden. There is no sound.
+Select a row to open its panel below the tree:
+
+- **Repository:** its checkouts with their agents, and the Tern sessions its agents run in.
+- **Agent:** the agent task as its heading, the status, one line with the Tern
+  session, the repository (from `git rev-parse --show-toplevel`, refreshed once a
+  minute), the directory of the file the agent changed most recently (when it is
+  not `./`), model, last completed turn, and session title, then the latest
+  assistant response from omp's structured chat. A failed turn or prompt delivery
+  error appears above the response.
+- **Subagent:** its context use, cost, requests, tool count, thinking level, and assignment.
+
+The most recently changed directory comes from omp's structured chat: the target
+of the latest non-error `edit`, `write`, or `ast_edit` call (omp's `file://` link
+when it has one, else the target resolved against the working directory). Reads,
+failed edits, MCP tool calls, and shell commands do not count. When the plugin
+first sees an agent, including after a reload, it looks back over the last 200
+chat messages for the newest change. The agent panel updates each second while
+the agent works, and otherwise when its state or latest message changes. It reads
+at most 32 recent messages and limits text length. If a native agent has no
+structured chat, the panel shows its latest pane update.
 
 | Control | Action |
 | --- | --- |
-| Up / Down or k / j | Select an agent |
-| Enter | Go to the selected agent's pane |
-| Click | Select an agent |
-| Double-click | Go to the agent's pane |
-| Home / End | Select the first or last agent |
-| Page Up / Page Down | Move by ten agents |
+| Up / Down or k / j | Select a row |
+| Home / End; Page Up / Page Down | Move to an end or by ten rows |
+| Enter | Go to an agent's pane (a subagent's goes to its agent); fold or unfold a repository |
+| Click | Select a row |
+| Double-click | Open a terminal block beside Software Factory in a repository; go to an agent's pane |
+| Cmd+Enter | Create and switch to a new Tern session in the selected repository |
+| c or Ask Carly | Ask Carly to start an agent in the selected repository |
+| r or Refresh | Rescan the root folder |
 
 The list uses Tern's native agent API. It includes agent blocks and omp sessions
 that Tern recognizes in shell panes. Set omp as your agent command in Tern.
-The plugin does not scan shell processes or require the `tern` executable at runtime.
 
-The header counts working, waiting, and idle agents, and running subagents.
-Select a row to open its panel: the agent task as its heading, the status, one
-line with the Tern session, project, path (when it is not `./`), model, last
-completed turn, and session title, then the latest assistant response from
-omp's structured chat. A failed turn or prompt delivery error appears above the
-response.
+#### Root folder and scanning
 
-The panel updates each second while the selected agent works, and otherwise when
-its state or latest message changes. It reads at most 32 recent messages and
-limits text length. Long responses scroll inside the panel. If a native agent
-has no structured chat, the panel shows its latest pane update.
-
-#### Repositories and worktrees
-
-The **Repositories** section on Agents lists repositories beneath a configurable
-root folder, with linked worktrees nested under their repository. Click **Root
-folder**, enter an absolute host path or `~/…`, and Save. Leave the field empty
-to clear it. The root is persisted once per host and inherited by new Software
-Factory blocks; existing blocks pick up changes when Agents is opened. Each
-block remembers its selected directory and keyboard section across reloads.
+Select **Root folder**, enter an absolute host path or `~/…`, and Save. Leave the
+field empty to clear it. The root is saved once per host and inherited by new
+Software Factory blocks; existing blocks pick up changes when Agents is opened.
 An existing per-block root migrates automatically when no shared root has been
 saved yet. Clearing the shared root also prevents older blocks from restoring it.
+Without a root folder, every agent is under **Other agents**.
 
 Discovery includes the root itself, nested repositories, and bare repositories.
 Repositories are deduplicated by Git's common directory; registered worktrees
-outside the root still appear beneath their repository. Worktrees show their
-branch, detached/locked state, and missing-directory status. Missing worktrees
-cannot be opened.
-
-| Control | Repository action |
-| --- | --- |
-| Tab | Switch keyboard navigation between Agents and Repositories |
-| Click | Select a repository or worktree |
-| Up / Down or k / j | Select a directory |
-| Enter or double-click | Open a shell block beside Software Factory in that directory |
-| Cmd+Enter | Create and switch to a new Tern session in that directory |
-| Home / End; Page Up / Page Down | Move to an end or by ten directories |
-| Refresh or r | Rescan the configured root |
-
-Scanning runs on the block's host when Agents is opened and on demand, using Git
-and `uv` (Python 3.11+, standard library only). It does not modify repositories.
-Directory symlinks are not followed; Git metadata and common generated folders
-(`.cache`, `node_modules`, `.venv`, `venv`, `target`, `dist`, `build`,
-`__pycache__`) are skipped. Individual failures are shown as warnings; a scan
+outside the root still appear beneath their repository. Scanning runs on the
+block's host when Agents is opened and on demand, using Git and `uv` (Python
+3.11+, standard library only). It does not modify repositories. Directory
+symlinks are not followed; Git metadata and common generated folders (`.cache`,
+`node_modules`, `.venv`, `venv`, `target`, `dist`, `build`, `__pycache__`) are
+skipped. Individual failures are shown as warnings under the heading; a scan
 deadline reports an error rather than presenting a silently incomplete list.
-Repositories sits below the selected agent's summary. Long agent, repository,
-and activity sections scroll independently.
+
+#### Asking Carly to start an agent
+
+Press **c** (or select **Ask Carly**) on a repository or one of its agents. Tern
+asks for your request in its prompt field, then opens Carly with it, the
+repository's checkouts and agents, and the sessions with panes in the repository.
+Carly starts the agent with this plugin's `start_agent(cwd, prompt, session)`
+export, in a new tab of the named session (or the current one) with the chosen
+checkout as its working directory.
 
 ### GitHub
 
@@ -445,7 +433,8 @@ lifecycle and worker jobs, and `news/worker.py` owns network access and SQLite.
 Completion tracking starts when the plugin loads and resets on reload. Closed and
 exited agents leave the list. The plugin reads activity and subagents through
 Tern only, and limits and task summaries through omp. It does not send prompts
-to your agents, interrupt them, or save transcripts to disk.
+to running agents, interrupt them, or save transcripts to disk; it starts a new
+agent only when Carly calls `start_agent` after you ask it to from Agents.
 The desktop window half must be loaded to update the list and open panes.
 
 ## Develop
@@ -460,12 +449,17 @@ tern plugin reload
 
 Tern stops a plugin's window timer until reload once one call runs past 50 ms,
 which stops every block from updating. The plugin splits each refresh into
-short steps across timer calls. A step that alone takes 25 ms or more is logged
-as `Slow refresh step: <step> took <n> ms` in `~/Library/Logs/Tern/tern.log`.
+short steps across timer calls, and a step that calls Tern starts its own timer
+call. A step that alone takes 25 ms or more is logged as
+`Slow refresh step: <step> took <n> ms` in `~/Library/Logs/Tern/tern.log`.
 
 The window half sends each block its agent list and details through the
 plugin's key/value store (`snapshot:<id>` and `details:<id>` in the plugin data
-directory's `kv.json`), and the block reads them each second. Tern's window API
+directory's `kv.json`), and the block reads them each second, or every 200 ms
+until its first list arrives. Each store write rewrites `kv.json`, so the window
+writes an entry only when it changes; entries carry event times on the window's
+clock, and the block ages them itself. A newly opened block gets a list from
+earlier reads before the window reads any agent's transcript. Tern's window API
 keeps only the low 44 bits of a pane id, and `cx.session:event` fails for a
 shortened id, so `<id>` is the block's pane id modulo 2^44. Entries leave the
 store when their block closes.
@@ -481,7 +475,8 @@ and forwards the other regions unchanged. Keep `main.pages` reserved for navigat
 Optional `key(state, key, cx)` and `event(state, event, cx)` handlers receive
 input only while that page is active. Left/right arrows are reserved for page
 switching unless `capture_key(state, key, cx)` consumes the input first.
-`init(savedPageState)` creates `state[page.id]`; `save(state)` persists that
+`init(savedPageState)` creates `state[page.state or page.id]` (Agents uses
+`state.tree`, since `state.agents` holds the agent list); `save(state)` persists that
 page's settings. `enter(state, cx)` runs when a page becomes active, including
 restoration after reload. The shell saves these page values alongside the active
 page id. A removed saved page falls back to the first registry entry.

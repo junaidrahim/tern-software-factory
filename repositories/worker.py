@@ -146,6 +146,8 @@ class Scanner:
         self.repos[common] = {
             "path": main,
             "name": os.path.basename(main) or main,
+            "branch": records[0]["branch"],
+            "detached": records[0]["detached"],
             "worktrees": sorted(children.values(), key=lambda row: alphabetical(row["path"])),
         }
         return common

@@ -16,7 +16,7 @@ local function read(cx, agent, finished)
 	}
 	if finished then
 		result.last_turn = finished.result
-		result.finished_seconds = math.max(0, math.floor((tern.now() - finished.at) / 1000))
+		result.finished_at = finished.at
 	end
 	local ok, messages = pcall(function() return cx.agents:transcript(agent.pane, { last = 32 }) end)
 	if not ok or type(messages) ~= "table" then

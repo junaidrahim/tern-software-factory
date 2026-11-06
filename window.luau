@@ -4,8 +4,9 @@
 local BLOCK = "tern-software-factory.agents"
 local REFRESH_MS, LIMITS_REFRESH_MS = 1000, 60000
 -- Tern disables a window timer until reload once one call runs past 50 ms,
--- which would stop every block. A timer call stops taking steps after
--- SLICE_MS; a single step that takes SLOW_MS is logged.
+-- which would stop every block. A refresh is a queue of short steps; a step
+-- that calls Tern starts its own timer call, and light steps follow until
+-- SLICE_MS has passed. A single step that takes SLOW_MS is logged.
 local SLICE_MS, SLOW_MS = 20, 25
 -- Agent task: a one-sentence summary of the last few minutes of activity,
 -- refreshed at most once a minute per agent, and only after new activity.
@@ -14,6 +15,7 @@ local TASK_PROMPT = "You summarize what a coding agent has been doing. Reply wit
 	.. "16 words, present tense, starting with a verb, about the task rather than individual tools. No quotes or preamble."
 local tracking = require("./tracking")
 local limits = require("./limits")
+local carly = require("./agents/carly")
 local finished, details = {}, {}
 -- The latest `omp usage` result: data survives a failed refresh, with its error.
 local usage = { data = nil, error = nil, at = nil, attempted = nil, running = false }
@@ -27,8 +29,10 @@ local summarizing = false
 -- The current refresh: short named steps, run in order across timer calls (see `refresh`).
 local queue = {}
 
-local function step(name, run)
-	return { name = name, run = run }
+-- A `light` step only computes from what earlier steps read; every other step
+-- calls Tern. A `required` step's failure ends the refresh: later steps need its result.
+local function step(name, run, kind)
+	return { name = name, run = run, light = kind == "light", required = kind == "required" }
 end
 
 local function text(value, fallback)
@@ -127,7 +131,8 @@ local function usage_snapshot()
 	end
 	return {
 		data = usage.data, error = usage.error,
-		age_ms = if usage.at then tern.now() - usage.at else 0,
+		-- When the data was read, on this window's clock; the block ages it.
+		at = usage.at,
 	}
 end
 
@@ -217,19 +222,37 @@ end
 -- `cx.session:event` and `cx.session:pane` fail for a shortened id, so
 -- snapshots and details travel through `tern.kv`, keyed by those low 44 bits:
 -- the block's host half (which sees the full id) computes the same key with
--- host.luau's `key`. Entries carry `seq` so a block applies each one once.
--- Keys of the blocks this window has written entries for.
+-- host.luau's `key`. Entries carry `seq` so a block applies each one once, and
+-- `clock` (this window's tern.now) so it can age the timestamps they carry.
+-- Per block this window has written entries for: the last value of each kind.
 local seq, written = 0, {}
 
 local function key(pane)
 	return string.format("%.0f", pane % 2^44)
 end
 
+local function same(a, b)
+	if type(a) ~= "table" or type(b) ~= "table" then return a == b end
+	for k, v in a do
+		if k ~= "seq" and k ~= "clock" and not same(v, b[k]) then return false end
+	end
+	for k in b do
+		if k ~= "seq" and k ~= "clock" and a[k] == nil then return false end
+	end
+	return true
+end
+
+-- Each store write rewrites the whole `kv.json` and has taken over 40 ms, so an
+-- entry is written only when it changes.
 local function write(kind, block_key, value)
+	local entries = written[block_key]
+	if entries and same(entries[kind], value) then return end
 	seq += 1
-	value.seq = seq
+	value.seq, value.clock = seq, tern.now()
 	tern.kv.set(kind .. ":" .. block_key, value)
-	written[block_key] = true
+	entries = entries or {}
+	entries[kind] = value
+	written[block_key] = entries
 end
 
 -- The open Software Factory block with this key.
@@ -251,46 +274,68 @@ local function deliver(block, agents, hosts, usage_now)
 	write("snapshot", key(block.pane), { agents = tern.json.array(rows), usage = usage_now })
 end
 
--- Discovery: find the blocks and live agents, then queue each agent's reads,
--- the snapshot, and each block's delivery as separate steps.
-local function publish(cx)
-	local panes, blocks = {}, {}
-	for _, pane in cx.session:panes() do
-		panes[pane.pane] = pane
-		if is_factory(pane) then table.insert(blocks, pane) end
-	end
-	-- Entries of closed blocks leave the store, including blocks whose program exited.
-	local open = {}
-	for _, block in blocks do open[key(block.pane)] = true end
-	for block_key in written do
-		if not open[block_key] then
-			written[block_key] = nil
-			tern.kv.set("snapshot:" .. block_key, nil)
-			tern.kv.set("details:" .. block_key, nil)
+-- Builds every live agent's row from what the reads so far found, then delivers
+-- them to `targets`, each block as its own step, before any other queued step.
+local function snapshot(scan, targets)
+	return step("snapshot", function()
+		local home, agents = scan.home, {}
+		for _, entry in scan.live do
+			local agent, pane = entry.agent, entry.pane
+			local last_turn = finished[agent.pane]
+			local cwd = text(agent.cwd)
+			-- Where the agent works: its newest change, else its cwd.
+			local work_dir = paths[agent.pane] or tracking.absolute(cwd, nil, home)
+			table.insert(agents, {
+				pane = agent.pane,
+				title = text(pane.title, text(agent.command, "Agent " .. string.format("%.0f", agent.pane))),
+				task = if tasks[agent.pane] then tasks[agent.pane].text else nil,
+				cwd = cwd,
+				work_dir = work_dir or "",
+				path = if work_dir then tracking.where(work_dir, cwd, home) else "",
+				model = text(agent.model),
+				delivery_error = text(agent.delivery_error),
+				preview = tracking.preview(agent.last_message),
+				last_turn = if last_turn then last_turn.result else nil,
+				finished_at = if last_turn then last_turn.at else nil,
+				state = agent.state,
+				session = scan.tabs[pane.tab] or "Session",
+				subagents = tern.json.array(subagents[agent.pane] or {}),
+			})
 		end
-	end
-	-- omp runs only while a Software Factory block is open.
-	if #blocks == 0 then return end
-	local limits_snapshot = usage_snapshot()
-	local hosts = hosts_by_pane(cx)
-	local sessions, tabs = {}, {}
-	for _, session in cx.sessions:list() do sessions[session.id] = session.name end
-	for _, tab in cx.session:tabs() do tabs[tab.id] = sessions[tab.session] or "Session" end
+		-- Pane order is stable while titles and agent states change.
+		table.sort(agents, function(a, b) return a.pane < b.pane end)
+		for i, block in targets do
+			table.insert(queue, i, step("deliver " .. string.format("%.0f", block.pane), function()
+				deliver(block, agents, scan.hosts, scan.limits)
+			end))
+		end
+	end, "light")
+end
+
+-- Live agents: queue each agent's reads, then the snapshot for every block. A block
+-- without a list yet first gets one from earlier reads, so it does not wait for these.
+local function discover(cx, scan)
 	local live, seen = {}, {}
-	local home = tern.getenv("HOME")
 	for _, agent in cx.agents:list() do
-		local pane = panes[agent.pane]
+		local pane = scan.panes[agent.pane]
 		if agent.state ~= "exited" and pane then
 			seen[agent.pane] = true
 			table.insert(live, { agent = agent, pane = pane })
 		end
 	end
+	scan.live = live
 	for id in details do if not seen[id] then details[id] = nil end end
 	for id in finished do if not seen[id] then finished[id] = nil end end
 	for id in logs do if not seen[id] then logs[id], tasks[id] = nil, nil end end
 	for id in paths do if not seen[id] then paths[id] = nil end end
 	for id in subagents do if not seen[id] then subagents[id] = nil end end
 	for id in signatures do if not seen[id] then signatures[id] = nil end end
+	local waiting = {}
+	for _, block in scan.blocks do
+		if not written[key(block.pane)] then table.insert(waiting, block) end
+	end
+	if #waiting > 0 then table.insert(queue, snapshot(scan, waiting)) end
+	local home = scan.home
 	for _, entry in live do
 		local agent = entry.agent
 		local id, cwd, label = agent.pane, text(agent.cwd), string.format("%.0f", agent.pane)
@@ -319,47 +364,48 @@ local function publish(cx)
 				end
 				table.insert(steps, step("subagents " .. label .. " sorted", function()
 					subagents[id] = tracking.sort_subagents(found)
-				end))
+				end, "light"))
 				for i, next_step in steps do table.insert(queue, i, next_step) end
 			end))
 		else
 			subagents[id] = nil
 		end
 	end
-	table.insert(queue, step("snapshot", function()
-		refresh_tasks()
-		local agents = {}
-		for _, entry in live do
-			local agent, pane = entry.agent, entry.pane
-			local last_turn = finished[agent.pane]
-			local cwd = text(agent.cwd)
-			-- Where the agent works: its newest change, else its cwd.
-			local work_dir = paths[agent.pane] or tracking.absolute(cwd, nil, home)
-			table.insert(agents, {
-				pane = agent.pane,
-				title = text(pane.title, text(agent.command, "Agent " .. string.format("%.0f", agent.pane))),
-				task = if tasks[agent.pane] then tasks[agent.pane].text else nil,
-				cwd = cwd,
-				work_dir = work_dir or "",
-				path = if work_dir then tracking.where(work_dir, cwd, home) else "",
-				model = text(agent.model),
-				delivery_error = text(agent.delivery_error),
-				preview = tracking.preview(agent.last_message),
-				last_turn = if last_turn then last_turn.result else nil,
-				finished_seconds = if last_turn then math.max(0, math.floor((tern.now() - last_turn.at) / 1000)) else nil,
-				state = agent.state,
-				session = tabs[pane.tab] or "Session",
-				subagents = tern.json.array(subagents[agent.pane] or {}),
-			})
+	table.insert(queue, step("tasks", refresh_tasks, "light"))
+	table.insert(queue, snapshot(scan, scan.blocks))
+end
+
+-- Discovery: find the blocks, then read hosts, sessions, tabs and agents, each
+-- as its own step.
+local function publish(cx)
+	local scan = { panes = {}, blocks = {}, home = tern.getenv("HOME") }
+	for _, pane in cx.session:panes() do
+		scan.panes[pane.pane] = pane
+		if is_factory(pane) then table.insert(scan.blocks, pane) end
+	end
+	-- Entries of closed blocks leave the store, including blocks whose program exited.
+	local open = {}
+	for _, block in scan.blocks do open[key(block.pane)] = true end
+	for block_key in written do
+		if not open[block_key] then
+			written[block_key] = nil
+			tern.kv.set("snapshot:" .. block_key, nil)
+			tern.kv.set("details:" .. block_key, nil)
 		end
-		-- Pane order is stable while titles and agent states change.
-		table.sort(agents, function(a, b) return a.pane < b.pane end)
-		for _, block in blocks do
-			table.insert(queue, step("deliver " .. string.format("%.0f", block.pane), function()
-				deliver(block, agents, hosts, limits_snapshot)
-			end))
-		end
-	end))
+	end
+	-- omp runs only while a Software Factory block is open.
+	if #scan.blocks == 0 then return end
+	scan.limits = usage_snapshot()
+	table.insert(queue, step("hosts", function(step_cx) scan.hosts = hosts_by_pane(step_cx) end, "required"))
+	table.insert(queue, step("sessions", function(step_cx)
+		scan.sessions = {}
+		for _, session in step_cx.sessions:list() do scan.sessions[session.id] = session.name end
+	end, "required"))
+	table.insert(queue, step("tabs", function(step_cx)
+		scan.tabs = {}
+		for _, tab in step_cx.session:tabs() do scan.tabs[tab.id] = scan.sessions[tab.session] or "Session" end
+	end, "required"))
+	table.insert(queue, step("agents", function(step_cx) discover(step_cx, scan) end, "required"))
 end
 
 tern.on("agent_finished", function(event)
@@ -424,6 +470,8 @@ end
 tern.route.link(function(request, cx)
 	local repository = open_repository(request, cx)
 	if repository then return repository end
+	local asked = carly.route(request, cx, find_block, key)
+	if asked then return asked end
 	local action, block_key, id = string.match(request.url, "^tern%-software%-factory://([a-z]+)/(%d+)/(%d+)$")
 	if not id or (action ~= "pane" and action ~= "inspect") then return nil end
 	local block = find_block(cx, block_key)
@@ -443,8 +491,6 @@ tern.route.link(function(request, cx)
 						cached = { at = now, signature = current, value = tracking.read(cx, agent, finished[target]) }
 						details[target] = cached
 					end
-					local last_turn = finished[target]
-					if last_turn then cached.value.finished_seconds = math.max(0, math.floor((now - last_turn.at) / 1000)) end
 					write("details", block_key, { details = cached.value })
 				end
 				return { handled = true }
@@ -461,23 +507,30 @@ tern.route.link(function(request, cx)
 	return { handled = true }
 end)
 
--- Each timer call takes steps until SLICE_MS has passed and continues in the
--- next call; a new refresh starts REFRESH_MS after the last step. A step that
--- alone nears Tern's budget is logged by name.
+-- A step that calls Tern runs only as the first step of a timer call, so it has
+-- the whole budget; light steps follow until SLICE_MS has passed. The refresh
+-- continues in the next call; a new refresh starts REFRESH_MS after the last
+-- step. A step that alone nears Tern's budget is logged by name.
 local function refresh(cx)
-	if #queue == 0 then queue = { step("discovery", publish) } end
-	local start = tern.now()
-	repeat
+	if #queue == 0 then queue = { step("blocks", publish, "required") } end
+	local start, first = tern.now(), true
+	while #queue > 0 and tern.now() - start < SLICE_MS do
+		if not first and not queue[1].light then break end
+		first = false
 		local next_step = table.remove(queue, 1)
 		local began = tern.now()
 		local ok, err = pcall(next_step.run, cx)
 		local took = tern.now() - began
-		if not ok then tern.log.warn("Cannot refresh agents:", next_step.name, err) end
+		if not ok then
+			tern.log.warn("Cannot refresh agents:", next_step.name, err)
+			if next_step.required then table.clear(queue) end
+		end
 		if took >= SLOW_MS then tern.log.warn(string.format("Slow refresh step: %s took %.0f ms", next_step.name, took)) end
-	until #queue == 0 or tern.now() - start >= SLICE_MS
+	end
 	-- Always reschedule, including after a transient host disconnect.
 	tern.timer(if #queue > 0 then 0 else REFRESH_MS, refresh)
 end
 
 -- Start at load as well as after reload, without retaining a window context.
 tern.timer(0, refresh)
+carly.register()

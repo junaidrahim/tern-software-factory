@@ -10,7 +10,10 @@ local tern = {
 	json = { decode = function(text) return assert(decoded[text], "Invalid JSON") end },
 	process = { run = function(argv, _, callback) table.insert(runs, { argv = argv, done = callback }) end },
 }
-local require = function() return {} end
+local carly = (function()
+-- AGENTS_CARLY_SOURCE
+end)()
+local require = function(path) return if path == "./agents/carly" then carly else {} end
 do
 -- WINDOW_SOURCE
 end

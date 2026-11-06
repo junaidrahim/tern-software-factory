@@ -1,6 +1,7 @@
 --!nonstrict
+-- The repository root folder (saved per host) and the scan of its repositories
+-- and worktrees. The Agents page shows the result as its repository tree.
 local ui = tern.ui
-local LIST = "main.repositories.tree"
 local INPUT = "layer.repository-root.body.root"
 local ROOT_SETTING = "repositories:root"
 
@@ -19,34 +20,11 @@ end
 
 local function set_root(repositories, root)
 	if root ~= repositories.root then
-		repositories.root, repositories.repos, repositories.warnings, repositories.selected = root, {}, {}, nil
+		repositories.root, repositories.repos, repositories.warnings = root, {}, {}
 		repositories.generation += 1
 		repositories.error, repositories.loading = nil, root ~= ""
 	end
 	repositories.configured_root = root
-end
-
-local function encode(value)
-	return (value:gsub("[^A-Za-z0-9_.~%-]", function(byte) return string.format("%%%02X", string.byte(byte)) end))
-end
-
-local function rows(repositories)
-	local result = {}
-	for _, repo in repositories.repos do
-		table.insert(result, { path = repo.path, name = repo.name, branch = repo.branch, detached = repo.detached, missing = repo.missing, locked = repo.locked })
-		for _, worktree in repo.worktrees do
-			table.insert(result, { path = worktree.path, name = worktree.path:match("([^/]+)/*$") or worktree.path,
-				branch = worktree.branch, detached = worktree.detached, locked = worktree.locked, missing = worktree.missing, child = true })
-		end
-	end
-	return result
-end
-
-local function item_id(path) return LIST .. ".p" .. encode(path) end
-
-local function selected_index(repositories, list)
-	for index, row in list do if row.path == repositories.selected then return index end end
-	return 1
 end
 
 local function notify(cx) pcall(function() cx:render() end) end
@@ -92,9 +70,6 @@ scan = function(repositories, cx)
 				for _, warning in answer.warnings do if type(warning) == "string" then table.insert(warnings, warning) end end
 			end
 			repositories.root, repositories.repos, repositories.warnings = answer.root, answer.repos, warnings
-			local list = rows(repositories)
-			local selected = list[selected_index(repositories, list)]
-			repositories.selected = if selected then selected.path else nil
 		end)
 		if not ok then repositories.error = tostring(problem) end
 		notify(cx)
@@ -145,7 +120,6 @@ local function save_root(repositories, cx)
 	scan(repositories, cx)
 end
 local function open_editor(repositories, cx)
-	repositories.section = "repositories"
 	repositories.editor = { text = repositories.root, cursor = #repositories.root }
 	cx:frame({ { "focus", INPUT } })
 end
@@ -173,54 +147,12 @@ local function edit_key(repositories, key, cx)
 	return true
 end
 
-local function launch(repositories, row, cx, session)
-	if not row then return end
-	if row.missing then repositories.error = "This worktree directory is missing: " .. row.path; return end
-	-- The window needs the block's full id to split it (window.luau's `open_repository`).
-	cx:open("tern-software-factory://" .. (if session then "repo-session/" else "repo-block/")
-		.. string.format("%.0f", cx.pane) .. "/" .. encode(row.path))
-end
-
 local function button(key, label, action, disabled)
 	return ui.node("el", { key = key, tag = "button", role = "factory-repositories-button", aria = label,
 		disabled = disabled, actions = { click = action } }, { ui.text(label) })
 end
-local function view(state)
-	local repositories = state.repositories
-	local list, items = rows(repositories), {}
-	for _, row in list do
-		local branch = if row.detached then "detached" elseif row.branch and row.branch ~= "" then row.branch else ""
-		local status = branch .. (if row.locked then " · locked" else "") .. (if row.missing then " · missing" else "")
-		table.insert(items, ui.node("item", { key = "p" .. encode(row.path),
-			role = if row.child then "factory-repository-worktree" else "factory-repository",
-			label = { ui.span((if row.child then "↳ " else "") .. row.name, "strong"), ui.span(row.path, "muted") },
-			detail = { ui.span(status, if row.missing then "warning" else "muted") },
-			title = row.path .. "\n" .. status, aria = row.name .. ", " .. row.path .. ", " .. status,
-		}))
-	end
-	local children = {
-		ui.node("row", { role = "factory-repositories-heading" }, {
-			ui.text({ ui.span("Repositories", "bold") }),
-			ui.badge(if repositories.section == "repositories" then "Keyboard active" else tostring(#repositories.repos), "muted"),
-			button("root-folder", "Root folder", "repositories-root"),
-			button("refresh", "Refresh", "repositories-refresh", repositories.loading or repositories.root == ""),
-		}),
-		ui.text({ ui.span(if repositories.root == "" then "Choose a root folder on this host to discover repositories and linked worktrees." else repositories.root, "muted") }),
-	}
-	local messages = {}
-	if repositories.loading then table.insert(messages, ui.text({ ui.span("Scanning repositories…", "muted") })) end
-	if repositories.error then table.insert(messages, ui.text({ ui.span(repositories.error, "error") })) end
-	for _, warning in repositories.warnings do table.insert(messages, ui.text({ ui.span(warning, "warning") })) end
-	if #messages > 0 then table.insert(children, ui.node("col", { role = "factory-repositories-status" }, messages)) end
-	table.insert(children, ui.node("list", { key = "tree", role = "factory-repositories-tree",
-		selected = if repositories.selected then item_id(repositories.selected) else nil, max = 0.3,
-		empty = { ui.span(if repositories.root == "" then "No root folder configured."
-			elseif repositories.loading then "Discovering repositories…"
-			elseif repositories.error then "No repository data available for this root."
-			else "No Git repositories found in this root folder.", "muted") },
-	}, items))
-	return ui.node("col", { key = "repositories", role = "factory-repositories" }, children)
-end
+
+-- The root folder dialog, while it is open.
 local function layer(state)
 	local editor = state.repositories.editor
 	if not editor then return ui.node("col", {}, {}) end
@@ -240,31 +172,17 @@ local function layer(state)
 	})
 end
 
-local function key(state, key, cx)
+-- Root folder and Refresh buttons; `repositories-root` and `repositories-refresh`
+-- actions reach `event`.
+local function buttons(state)
 	local repositories = state.repositories
-	if repositories.editor then return edit_key(repositories, key, cx) end
-	if key.name == "tab" and not key.ctrl and not key.alt and not key.meta then
-		repositories.section = if repositories.section == "agents" then "repositories" else "agents"
-		return true
-	end
-	if repositories.section ~= "repositories" then return false end
-	local list = rows(repositories)
-	local index = selected_index(repositories, list)
-	if key.name == "enter" and key.meta and not key.ctrl and not key.alt then launch(repositories, list[index], cx, true); return true end
-	if key.ctrl or key.alt or key.meta then return false end
-	if key.name == "r" then scan(repositories, cx); return true end
-	if key.name == "enter" then launch(repositories, list[index], cx, false); return true end
-	if #list == 0 then return false end
-	if key.name == "down" or key.name == "j" then index = math.min(#list, index + 1)
-	elseif key.name == "up" or key.name == "k" then index = math.max(1, index - 1)
-	elseif key.name == "home" then index = 1
-	elseif key.name == "end" then index = #list
-	elseif key.name == "page_down" then index = math.min(#list, index + 10)
-	elseif key.name == "page_up" then index = math.max(1, index - 10)
-	else return false end
-	repositories.selected = list[index].path
-	return true
+	return {
+		button("root-folder", "Root folder", "repositories-root"),
+		button("refresh", "Refresh", "repositories-refresh", repositories.loading or repositories.root == ""),
+	}
 end
+
+-- Handles the dialog's and the buttons' actions; true when it took the event.
 local function event(state, event, cx)
 	local repositories = state.repositories
 	if repositories.editor then
@@ -272,34 +190,17 @@ local function event(state, event, cx)
 		elseif event.ev == "action" and event.act == "repositories-root-cancel" then close(repositories, cx) end
 		return true
 	end
-	if event.ev == "action" then
-		if event.act == "repositories-root" then open_editor(repositories, cx); return true
-		elseif event.act == "repositories-refresh" then repositories.section = "repositories"; scan(repositories, cx); return true end
-	elseif (event.ev == "select" or event.ev == "activate") and event.id == LIST then
-		for _, row in rows(repositories) do
-			if item_id(row.path) == event.item then
-				repositories.section, repositories.selected = "repositories", row.path
-				if event.ev == "activate" then launch(repositories, row, cx, false) end
-				break
-			end
-		end
-		return true
-	end
+	if event.ev == "action" and event.act == "repositories-root" then open_editor(repositories, cx); return true end
+	if event.ev == "action" and event.act == "repositories-refresh" then scan(repositories, cx); return true end
 	return false
 end
 
 return {
 	init = function(saved)
-		saved = if type(saved) == "table" then saved else {}
 		local root, problem = shared_root(saved)
-		return { root = root or "", configured_root = root or "", error = problem, repos = {}, warnings = {}, generation = 0,
-			selected = if type(saved.selected) == "string" then saved.selected else nil,
-			section = if saved.section == "repositories" then "repositories" else "agents", loading = false }
+		return { root = root or "", configured_root = root or "", error = problem, repos = {}, warnings = {}, generation = 0, loading = false }
 	end,
-	save = function(state)
-		local repositories = state.repositories
-		return { selected = repositories.selected, section = repositories.section }
-	end,
+	-- Picks up a root saved by another block, then rescans.
 	enter = function(state, cx)
 		local root, problem = shared_root()
 		if problem then state.repositories.error = problem; return end
@@ -307,8 +208,9 @@ return {
 		scan(state.repositories, cx)
 		if state.repositories.editor then cx:frame({ { "focus", INPUT } }) end
 	end,
+	scan = function(state, cx) scan(state.repositories, cx) end,
 	capture_key = function(state, key, cx)
 		return if state.repositories.editor then edit_key(state.repositories, key, cx) else false
 	end,
-	view = view, layer = layer, key = key, event = event,
+	layer = layer, buttons = buttons, event = event,
 }

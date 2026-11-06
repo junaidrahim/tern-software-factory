@@ -15,116 +15,6 @@
   font-weight: 600;
   line-height: 24px;
 }
-[data-role='factory-grid'] {
-  /* Status follows Tern session; the agent task takes remaining width. */
-  --factory-session: clamp(72px, 16%, 120px);
-  --factory-status: clamp(110px, 25%, 210px);
-  --factory-project: clamp(90px, 20%, 130px);
-  --factory-columns: var(--factory-session) var(--factory-status) var(--factory-project) minmax(0, 1fr);
-  --factory-identity: var(--factory-columns);
-  gap: 0;
-  min-width: 0;
-  overflow-x: auto;
-  border: 1px solid var(--l2);
-  border-radius: 8px;
-}
-[data-role='factory-grid'] > .sf { min-width: 420px; flex-shrink: 0; }
-[data-role='factory-columns'], [data-role='factory-grid'] .sf-item {
-  display: grid;
-  grid-template-columns: var(--factory-columns);
-  column-gap: 6px;
-  align-items: center;
-  box-sizing: border-box;
-  padding-left: 8px;
-  padding-right: 8px;
-}
-[data-role='factory-columns'] {
-  padding-top: 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--l2);
-  background: var(--l1);
-  color: var(--t3);
-  font-size: 12px;
-  font-weight: 600;
-}
-/* Every row is one compact line at the virtual scroller's row height, so plain
-   and virtual lists (over 200 rows) share native metrics and selection can
-   reveal the last row. Three label spans: Tern session, project and agent
-   task (for subagents: type, name, current tool and stats). */
-[data-role='factory-identifiers'] {
-  display: grid;
-  grid-template-columns: var(--factory-identity);
-  column-gap: 6px;
-  min-width: 0;
-}
-[data-role='factory-identifiers'],
-[data-role='factory-grid'] .sf-item-label {
-  grid-column: 1 / -1;
-  grid-row: 1;
-}
-[data-role='factory-identifiers'] > :nth-child(1),
-[data-role='factory-grid'] .sf-item-label > span:nth-child(1) { grid-column: 1; }
-[data-role='factory-identifiers'] > :nth-child(2),
-[data-role='factory-grid'] .sf-item-label > span:nth-child(2) { grid-column: 3; }
-[data-role='factory-identifiers'] > :nth-child(3),
-[data-role='factory-grid'] .sf-item-label > span:nth-child(3) { grid-column: 4; }
-[data-role='factory-columns'] > :last-child,
-[data-role='factory-grid'] .sf-item-detail {
-  grid-column: 2;
-  grid-row: 1;
-}
-[data-role='factory-grid'] .sf-item {
-  height: calc(var(--sf-lh) + 6px);
-  min-height: 0;
-  padding-top: 3px;
-  padding-bottom: 3px;
-  border-bottom: 1px solid var(--l2);
-}
-[data-role='factory-grid'] .sf-item:last-child { border-bottom: 0; }
-[data-role='factory-grid'] .sf-item-label,
-[data-role='factory-grid'] .sf-item-detail {
-  min-width: 0;
-  max-width: none;
-  margin: 0;
-  overflow: hidden;
-  text-align: left;
-  font-size: 12px;
-  line-height: var(--sf-lh);
-}
-[data-role='factory-grid'] .sf-item-value { display: none; }
-[data-role='factory-grid'] .sf-item-label {
-  display: grid;
-  grid-template-columns: var(--factory-identity);
-  column-gap: 6px;
-}
-[data-role='factory-grid'] .sf-item-label > span,
-[data-role='factory-grid'] .sf-item-detail > span {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-/* Status: dot, label, then a note that gives way first. */
-[data-role='factory-grid'] .sf-item-detail { display: flex; align-items: center; gap: 7px; }
-[data-role='factory-grid'] .sf-item-detail > span:first-child {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  font-size: 0;
-  border-radius: 50%;
-  background: currentColor;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tc) 12%, transparent);
-}
-[data-role='factory-grid'] .sf-item-detail > span:nth-child(2) { flex: none; }
-[data-role='factory-grid'] .sf-item-detail > span:nth-child(3) { flex: 1; font-size: 11px; }
-[data-role='factory-grid'] .sf-item[data-tone='accent'] .sf-item-detail > span:first-child {
-  animation: tern-software-factory-working 2.2s ease-in-out infinite;
-}
-[data-role='factory-grid'] .sf-item[data-tone='warning'] .sf-item-detail > span:first-child,
-[data-role='factory-grid'] .sf-item[data-tone='error'] .sf-item-detail > span:first-child {
-  animation: tern-software-factory-attention 1.8s ease-in-out infinite;
-}
 @keyframes tern-software-factory-working {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.35; transform: scale(0.8); }
@@ -132,33 +22,6 @@
 @keyframes tern-software-factory-attention {
   0%, 40%, 100% { opacity: 1; }
   20%, 60% { opacity: 0.3; }
-}
-.sf-still [data-role='factory-grid'] .sf-item .sf-item-detail > span:first-child,
-.sf-paused [data-role='factory-grid'] .sf-item .sf-item-detail > span:first-child {
-  animation: none;
-}
-.sf-covered [data-role='factory-grid'] .sf-item .sf-item-detail > span:first-child { animation-play-state: paused; }
-@media (prefers-reduced-motion: reduce) {
-  [data-role='factory-grid'] .sf-item[data-tone] .sf-item-detail > span:first-child { animation: none; }
-}
-/* Subagent rows sit under their agent, tinted and indented. A fourth label
-   span carries model, tokens and run time. */
-[data-role='factory-grid'] .sf-item[data-role='factory-subagent'] {
-  background: color-mix(in srgb, var(--l1) 60%, transparent);
-}
-[data-role='factory-grid'] .sf-item[data-role='factory-subagent'] .sf-item-label {
-  grid-template-columns: var(--factory-session) var(--factory-status) var(--factory-project) minmax(0, 1fr) minmax(0, 0.6fr);
-}
-[data-role='factory-grid'] .sf-item[data-role='factory-subagent'] .sf-item-label > span:nth-child(4) {
-  grid-column: 5;
-}
-[data-role='factory-grid'] .sf-item[data-role='factory-subagent'] .sf-item-label > span:first-child {
-  box-sizing: border-box;
-  padding-left: 12px;
-}
-[data-role='factory-grid'] .sf-item[data-role='factory-subagent'] .sf-item-label > span:nth-child(4) {
-  font-family: var(--mono);
-  font-size: 11px;
 }
 [data-role='factory-limits'] {
   gap: 10px;
@@ -277,52 +140,13 @@
 }
 [data-role='factory-activity'] .sf-text, [data-role='factory-activity'] .sf-md { overflow-wrap: anywhere; }
 
-/* Bound the summary above Repositories so both sections remain reachable. */
+/* Bound the selected row's summary so the tree stays reachable. */
 [data-role='factory-pages'] > [data-role='factory-activity'] {
   max-height: 22vh;
   overflow-y: auto;
 }
-[data-role='factory-grid'] > .sf-list { max-height: 24vh; overflow-y: auto; }
-[data-role='factory-repositories'] {
-  gap: 7px;
-  min-width: 0;
-  padding: 10px;
-  border: 1px solid var(--l2);
-  border-radius: 8px;
-}
-[data-role='factory-repositories-heading'] {
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-[data-role='factory-repositories-heading'] > .sf-text:first-child { flex: 1; }
-[data-role='factory-repositories-heading'] .sf-badge { margin: 0; }
-[data-role='factory-repositories'] > .sf-text { overflow-wrap: anywhere; }
-[data-role='factory-repositories-tree'] { max-height: 30vh; overflow-y: auto; }
-[data-role='factory-repositories-tree'] .sf-item {
-  min-width: 0;
-  height: calc(var(--sf-lh) + 6px);
-  min-height: 0;
-  padding: 3px 8px;
-  border-bottom: 1px solid var(--l2);
-}
-[data-role='factory-repositories-tree'] .sf-item-label {
-  display: flex;
-  gap: 10px;
-  min-width: 0;
-  overflow: hidden;
-}
-[data-role='factory-repositories-tree'] .sf-item-label > span {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-[data-role='factory-repositories-tree'] .sf-item-label > span:first-child { flex: 0 1 auto; max-width: 35%; }
-[data-role='factory-repositories-tree'] .sf-item-label > span:last-child { flex: 1; font-size: 11px; }
-[data-role='factory-repositories-tree'] .sf-item-detail { max-width: 35%; font-size: 12px; }
-[data-role='factory-repository-worktree'] { background: color-mix(in srgb, var(--l1) 60%, transparent); }
-[data-role='factory-repository-worktree'] .sf-item-label { padding-left: 20px; }
-[data-role='factory-repositories-status'] { gap: 4px; max-height: 72px; overflow-y: auto; overflow-wrap: anywhere; }
+[data-role='factory-tree'] > .sf-list { max-height: 45vh; overflow-y: auto; }
+[data-role='factory-tree-status'] { gap: 4px; max-height: 72px; overflow-y: auto; overflow-wrap: anywhere; }
 [data-role='factory-repositories-dialog'] { padding: 16px; gap: 12px; }
 [data-role='factory-repositories-root-input'] { width: 100%; min-width: 0; }
 [data-role='factory-repositories-actions'] { gap: 8px; justify-content: flex-end; }
@@ -335,3 +159,137 @@
   cursor: pointer;
 }
 [data-role='factory-repositories-button']:disabled { opacity: 0.5; cursor: default; }
+
+/* Agents: repositories as a tree. Agent rows read Agent task, Worktree,
+   Session, then Status; repository rows span the row. */
+[data-role='factory-tree'] {
+  --tree-worktree: clamp(110px, 24%, 230px);
+  --tree-session: clamp(80px, 15%, 140px);
+  --tree-status: clamp(110px, 22%, 210px);
+  --tree-columns: minmax(0, 1fr) var(--tree-worktree) var(--tree-session) var(--tree-status);
+  gap: 0;
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid var(--l2);
+  border-radius: 8px;
+}
+[data-role='factory-tree'] > .sf { min-width: 460px; flex-shrink: 0; }
+[data-role='factory-tree-columns'], [data-role='factory-tree'] .sf-item {
+  display: grid;
+  grid-template-columns: var(--tree-columns);
+  column-gap: 8px;
+  align-items: center;
+  box-sizing: border-box;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+[data-role='factory-tree-columns'] {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--l2);
+  background: var(--l1);
+  color: var(--t3);
+  font-size: 12px;
+  font-weight: 600;
+}
+[data-role='factory-tree'] .sf-item {
+  height: calc(var(--sf-lh) + 6px);
+  min-height: 0;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--l2);
+}
+[data-role='factory-tree'] .sf-item:last-child { border-bottom: 0; }
+[data-role='factory-tree'] .sf-item-value { display: none; }
+[data-role='factory-tree'] .sf-item-label,
+[data-role='factory-tree'] .sf-item-detail {
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  overflow: hidden;
+  text-align: left;
+  font-size: 12px;
+  line-height: var(--sf-lh);
+}
+[data-role='factory-tree'] .sf-item-label > span,
+[data-role='factory-tree'] .sf-item-detail > span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Repository rows: name, branch and worktree count, then the agent summary. */
+[data-role='factory-tree'] .sf-item[data-role^='factory-tree-repo'] {
+  background: var(--l1);
+}
+[data-role='factory-tree'] .sf-item[data-role^='factory-tree-repo'] .sf-item-label {
+  grid-column: 1 / span 3;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+[data-role='factory-tree'] .sf-item[data-role^='factory-tree-repo'] .sf-item-label > span:first-child { flex: 0 1 auto; font-size: 13px; }
+[data-role='factory-tree'] .sf-item[data-role^='factory-tree-repo'] .sf-item-label > span:not(:first-child) { flex: 0 1 auto; font-size: 11px; }
+[data-role='factory-tree'] .sf-item[data-role^='factory-tree-repo'] .sf-item-detail { grid-column: 4; }
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-repo-quiet'] { opacity: 0.7; }
+
+/* Agent and subagent rows: three label cells, then the status. */
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'] .sf-item-label,
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] .sf-item-label {
+  grid-column: 1 / span 3;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--tree-worktree) var(--tree-session);
+  column-gap: 8px;
+}
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'] .sf-item-label > span:first-child { padding-left: 18px; }
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] { background: color-mix(in srgb, var(--l1) 50%, transparent); }
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] .sf-item-label > span:first-child { padding-left: 34px; }
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] .sf-item-label > span:nth-child(3),
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'] .sf-item-label > span:nth-child(2) {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+/* Status: dot, label, then a note that gives way first. */
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'] .sf-item-detail,
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] .sf-item-detail {
+  grid-column: 4;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'] .sf-item-detail > span:first-child,
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] .sf-item-detail > span:first-child {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  font-size: 0;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tc) 12%, transparent);
+}
+[data-role='factory-tree'] .sf-item-detail > span:nth-child(2) { flex: none; }
+[data-role='factory-tree'] .sf-item-detail > span:nth-child(3) { flex: 1; font-size: 11px; }
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'][data-tone='accent'] .sf-item-detail > span:first-child {
+  animation: tern-software-factory-working 2.2s ease-in-out infinite;
+}
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'][data-tone='warning'] .sf-item-detail > span:first-child,
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'][data-tone='error'] .sf-item-detail > span:first-child {
+  animation: tern-software-factory-attention 1.8s ease-in-out infinite;
+}
+.sf-still [data-role='factory-tree'] .sf-item .sf-item-detail > span:first-child,
+.sf-paused [data-role='factory-tree'] .sf-item .sf-item-detail > span:first-child { animation: none; }
+.sf-covered [data-role='factory-tree'] .sf-item .sf-item-detail > span:first-child { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) {
+  [data-role='factory-tree'] .sf-item[data-tone] .sf-item-detail > span:first-child { animation: none; }
+}
+[data-role='factory-tree-button'] {
+  padding: 4px 9px;
+  border: 1px solid var(--l2);
+  border-radius: 6px;
+  background: var(--l1);
+  color: var(--t1);
+  cursor: pointer;
+}
+[data-role='factory-tree-button']:disabled { opacity: 0.5; cursor: default; }

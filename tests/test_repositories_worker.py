@@ -69,7 +69,20 @@ class RepositoryWorkerTests(unittest.TestCase):
 
     def test_root_itself_and_unborn_repository(self):
         repo = self.repository(self.root / "unborn", commit=False)
-        self.assertEqual(self.scan(repo)["repos"], [{"path": str(repo), "name": "unborn", "worktrees": []}])
+        self.assertEqual(self.scan(repo)["repos"], [{
+            "path": str(repo), "name": "unborn", "branch": "main", "detached": False, "worktrees": [],
+        }])
+
+    def test_main_checkout_reports_its_branch_from_a_linked_worktree(self):
+        main = self.repository(self.root / "main")
+        self.git(main, "switch", "-c", "trunk")
+        self.worktree(main, self.root / "linked")
+        self.git(main, "switch", "--detach")
+        row = self.scan()["repos"][0]
+        self.assertEqual((row["branch"], row["detached"]), ("", True))
+        self.git(main, "switch", "trunk")
+        row = self.scan()["repos"][0]
+        self.assertEqual((row["branch"], row["detached"]), ("trunk", False))
 
     def test_nested_repositories_are_not_hidden_by_parent(self):
         repo = self.repository(self.root / "outer")

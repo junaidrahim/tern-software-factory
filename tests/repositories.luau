@@ -1,4 +1,4 @@
--- Repository navigation exercises the real section with deterministic worker replies.
+-- The repository root folder and scan, against deterministic worker replies.
 local function node(kind, props, children)
 	return { k = kind, p = if props and next(props) then props else nil, c = children }
 end
@@ -31,11 +31,6 @@ local cx = { pane = 2^44 + 42, open = function(_, url) table.insert(opened, url)
 	render = function() if fail_render then error("Pane closed") end end }
 local function state(saved) return { repositories = section.init(saved) } end
 local function action(state, act) return section.event(state, { ev = "action", act = act }, cx) end
-local function key(state, name, extra)
-	local event = extra or {}
-	event.name = name
-	return section.key(state, event, cx)
-end
 local function edit(state, name, extra)
 	local event = extra or {}
 	event.name = name
@@ -62,26 +57,12 @@ local function find(root, role)
 	if root.p and root.p.role == role then return root end
 	for _, child in root.c or {} do local found = find(child, role); if found then return found end end
 end
-local function text(root)
-	local parts = {}
-	if root.p and root.p.text then
-		if type(root.p.text) == "string" then table.insert(parts, root.p.text)
-		else for _, span in root.p.text do table.insert(parts, span.t) end end
-	end
-	if root.p and root.p.empty then for _, span in root.p.empty do table.insert(parts, span.t) end end
-	for _, child in root.c or {} do table.insert(parts, text(child)) end
-	return table.concat(parts, "\n")
-end
 local s = state(nil)
 section.enter(s, cx)
 assert(#requests == 0 and s.repositories.root == "", "Unset roots never scan HOME")
-assert(text(section.view(s)):find("Choose a root folder", 1, true))
 assert(not section.capture_key(s, { name = "left" }, cx), "Page arrows remain available outside the modal")
-assert(not key(s, "down") and s.repositories.section == "agents")
-key(s, "tab")
-assert(s.repositories.section == "repositories")
-key(s, "tab", { shift = true })
-assert(s.repositories.section == "agents", "Both Tab directions toggle the two sections")
+local buttons = section.buttons(s)
+assert(buttons[1].p.actions.click == "repositories-root" and buttons[2].p.disabled, "Refresh waits for a root folder")
 
 -- Native input caret and selection use UTF-16 while edits preserve UTF-8.
 action(s, "repositories-root")
@@ -116,56 +97,16 @@ local special = "/host/Code/My repo%#é😀"
 local linked = "/outside/work tree"
 local missing = "/outside/gone"
 reply(1, { ok = true, root = "/host/Code", repos = { repository(special, { worktree(linked), worktree(missing, true) }) }, warnings = { "Skipped unreadable folder" } })
-assert(not s.repositories.loading and s.repositories.root == "/host/Code" and s.repositories.selected == special)
-local view = section.view(s)
-local tree = find(view, "factory-repositories-tree")
-assert(view.p.role == "factory-repositories" and #tree.c == 3)
-assert(tree.c[2].p.role == "factory-repository-worktree" and tree.c[2].p.label[1].t:sub(1, #"↳ ") == "↳ ")
-assert(tree.c[2].p.detail[1].t == "feature/test" and tree.c[3].p.detail[1].t:find("missing", 1, true))
-assert(text(view):find("Skipped unreadable folder", 1, true))
-key(s, "enter")
-assert(opened[#opened] == "tern-software-factory://repo-block/17592186044458/%2Fhost%2FCode%2FMy%20repo%25%23%C3%A9%F0%9F%98%80",
-	"A repository link carries the block's full id")
-key(s, "enter", { meta = true })
-assert(opened[#opened] == "tern-software-factory://repo-session/17592186044458/%2Fhost%2FCode%2FMy%20repo%25%23%C3%A9%F0%9F%98%80")
-key(s, "down")
-assert(s.repositories.selected == linked)
-key(s, "enter")
-assert(opened[#opened] == "tern-software-factory://repo-block/17592186044458/%2Foutside%2Fwork%20tree")
-key(s, "end")
-local launches = #opened
-key(s, "enter")
-key(s, "enter", { meta = true })
-assert(#opened == launches and s.repositories.error:find("missing", 1, true), "Missing paths remain selectable but cannot launch")
-key(s, "page_up")
-assert(s.repositories.selected == special)
-key(s, "page_down")
-assert(s.repositories.selected == missing)
-key(s, "k")
-assert(s.repositories.selected == linked)
-key(s, "home")
-section.event(s, { ev = "select", id = "main.repositories.tree", item = "main.repositories.tree.p%2Foutside%2Fwork%20tree" }, cx)
-assert(s.repositories.selected == linked and #opened == launches, "Click selects without launch")
-section.event(s, { ev = "activate", id = "main.repositories.tree", item = "main.repositories.tree.p%2Foutside%2Fwork%20tree" }, cx)
-assert(#opened == launches + 1 and opened[#opened]:find("repo%-block"), "Activation opens the clicked directory")
-local saved = section.save(s)
-local restored = state(saved)
-assert(restored.repositories.selected == linked and restored.repositories.section == "repositories")
-assert(saved.root == nil and saved.repos == nil and saved.loading == nil and saved.editor == nil,
-	"Only selection and keyboard section belong to per-block state")
-section.enter(restored, cx)
-reply(2, { ok = true, root = "/host/Code", repos = { repository(special, { worktree(linked) }) } })
-assert(restored.repositories.selected == linked, "Saved selection survives initial loading")
-action(restored, "repositories-refresh")
-reply(3, { ok = true, root = "/host/Code", repos = { repository(special) } })
-assert(restored.repositories.selected == special, "Removed selected worktree reconciles to first repository")
-print("PASS: Repository setup, native editing, navigation, encoding and saved selection")
+assert(not s.repositories.loading and s.repositories.root == "/host/Code" and s.repositories.repos[1].path == special)
+assert(#s.repositories.repos[1].worktrees == 2 and s.repositories.warnings[1] == "Skipped unreadable folder")
+assert(not section.event(s, { ev = "select", id = "main.tree.rows", item = "x" }, cx), "Other events pass through")
+print("PASS: Repository setup, native editing and scanning")
 
 -- A root change clears previous data immediately and queues behind the active process.
 action(s, "repositories-refresh")
 local old_job = #requests
 root(s, "/new")
-assert(#s.repositories.repos == 0 and s.repositories.selected == nil and s.repositories.loading)
+assert(#s.repositories.repos == 0 and s.repositories.loading)
 root(s, "/newest")
 assert(#requests == old_job, "Root changes coalesce behind the single in-flight process")
 reply(old_job, { ok = true, root = "/host/Code", repos = { repository("/old/stale") } })
@@ -174,7 +115,7 @@ assert(s.repositories.root == "/newest" and #s.repositories.repos == 0, "Old roo
 requests[old_job].done({ status = 1 })
 assert(s.repositories.loading, "Duplicate old callbacks cannot settle the replacement scan")
 reply(#requests, { ok = true, root = "/newest", repos = { repository("/newest/repo") } })
-assert(s.repositories.selected == "/newest/repo")
+assert(s.repositories.repos[1].path == "/newest/repo")
 action(s, "repositories-refresh")
 reply(#requests, { ok = false, root = "/newest", repos = {}, error = "Permission denied" })
 assert(#s.repositories.repos == 1 and s.repositories.error == "Permission denied", "Same-root failures retain last good data")
@@ -191,8 +132,8 @@ action(s, "repositories-refresh")
 fail_render = true
 reply(#requests, { ok = true, root = "/newest", repos = {} })
 fail_render = false
-assert(not s.repositories.loading and s.repositories.selected == nil and #s.repositories.repos == 0, "Closed-pane render exceptions cannot strand the callback")
-assert(text(section.view(s)):find("No Git repositories found", 1, true))
+assert(not s.repositories.loading and #s.repositories.repos == 0 and s.repositories.error == nil,
+	"Closed-pane render exceptions cannot strand the callback")
 local_uv, fail_start = false, true
 action(s, "repositories-refresh")
 assert(not s.repositories.loading and s.repositories.error:find("Cannot start", 1, true))
@@ -207,7 +148,6 @@ assert(#requests == clearing_job and #s.repositories.repos == 0 and s.repositori
 root(s, "/bad-root")
 reply(#requests, { ok = false, root = "/bad-root", repos = {}, error = "Not a directory" })
 assert(s.repositories.error == "Not a directory" and #s.repositories.repos == 0)
-assert(text(section.view(s)):find("No repository data", 1, true))
 print("PASS: Repository scan serialization, stale callbacks, failures, clearing and empty states")
 
 -- A host preference outlives individual block state, including explicit clearing.
@@ -218,7 +158,7 @@ assert(state(nil).repositories.root == "")
 assert(state({ root = "/obsolete" }).repositories.root == "",
 	"An explicitly cleared shared root cannot be resurrected by an old block")
 preferences = {}
-local migrated = state({ root = "/existing/root", selected = "/existing/root/repo" })
+local migrated = state({ root = "/existing/root" })
 assert(migrated.repositories.root == "/existing/root" and state(nil).repositories.root == "/existing/root",
 	"A legacy block migrates its root so newly created blocks inherit it")
 assert(state({ root = "/another/legacy-root" }).repositories.root == "/existing/root",
