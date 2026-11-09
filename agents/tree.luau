@@ -6,10 +6,6 @@ local function trim(path)
 	return if #path > 1 then (path:gsub("/+$", "")) else path
 end
 
-local function inside(path, dir)
-	return path == dir or path:sub(1, #dir + 1) == dir .. "/" or (dir == "/" and path:sub(1, 1) == "/")
-end
-
 local function name_of(path)
 	return path:match("([^/]+)/*$") or path
 end
@@ -44,24 +40,29 @@ end
 -- repository (`other`), then repositories without agents. Each group lists its
 -- agents as `{agent, checkout}` in the order given; the deepest checkout that
 -- holds an agent's cwd wins, so a worktree inside its repository claims its agents.
+-- Checkouts are found by walking up from each cwd, not by scanning every checkout.
 local function group(repos, agents)
-	local groups = {}
+	local groups, owners = {}, {}
 	for _, repo in repos do
-		table.insert(groups, { repo = repo, checkouts = checkouts(repo), agents = {} })
+		local entry = { repo = repo, checkouts = checkouts(repo), agents = {} }
+		table.insert(groups, entry)
+		-- A directory listed twice belongs to the first repository listing it.
+		for _, checkout in entry.checkouts do
+			if not owners[checkout.path] then owners[checkout.path] = { checkout = checkout, entry = entry } end
+		end
 	end
 	local other = { other = true, checkouts = {}, agents = {} }
 	for _, agent in agents do
-		local cwd = trim(if type(agent.cwd) == "string" then agent.cwd else "")
-		local best, owner
-		if cwd ~= "" then
-			for _, entry in groups do
-				for _, checkout in entry.checkouts do
-					if inside(cwd, checkout.path) and (not best or #checkout.path > #best.path) then best, owner = checkout, entry end
-				end
-			end
+		local dir = trim(if type(agent.cwd) == "string" then agent.cwd else "")
+		local owner
+		while dir and dir ~= "" do
+			owner = owners[dir]
+			if owner or dir == "/" then break end
+			local parent = dir:match("^(.*)/[^/]*$")
+			dir = if parent == "" then "/" else parent
 		end
 		if owner then
-			table.insert(owner.agents, { agent = agent, checkout = best })
+			table.insert(owner.entry.agents, { agent = agent, checkout = owner.checkout })
 		else
 			table.insert(other.agents, { agent = agent })
 		end
@@ -73,4 +74,4 @@ local function group(repos, agents)
 	return result
 end
 
-return { group = group, describe = describe, inside = inside, tilde = tilde }
+return { group = group, describe = describe, tilde = tilde }

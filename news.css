@@ -99,8 +99,6 @@
   grid-row: 1;
   grid-template-columns: var(--news-columns);
   column-gap: 4px;
-}
-[data-role='factory-news-grid'] .sf-item-label {
   min-width: 0;
   max-width: none;
   margin: 0;

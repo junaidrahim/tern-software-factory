@@ -161,7 +161,7 @@
 [data-role='factory-repositories-button']:disabled { opacity: 0.5; cursor: default; }
 
 /* Agents: repositories as a tree. Agent rows read Agent task, Worktree,
-   Session, then Status; repository rows span the row. */
+   Session, then Status; repository rows run their label across the first three. */
 [data-role='factory-tree'] {
   --tree-worktree: clamp(110px, 24%, 230px);
   --tree-session: clamp(80px, 15%, 140px);
@@ -219,48 +219,23 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-
-/* Repository rows: name, branch and worktree count, then the agent summary. */
-[data-role='factory-tree'] .sf-item[data-role^='factory-tree-repo'] {
-  background: var(--l1);
-}
-[data-role='factory-tree'] .sf-item[data-role^='factory-tree-repo'] .sf-item-label {
-  grid-column: 1 / span 3;
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-[data-role='factory-tree'] .sf-item[data-role^='factory-tree-repo'] .sf-item-label > span:first-child { flex: 0 1 auto; font-size: 13px; }
-[data-role='factory-tree'] .sf-item[data-role^='factory-tree-repo'] .sf-item-label > span:not(:first-child) { flex: 0 1 auto; font-size: 11px; }
-[data-role='factory-tree'] .sf-item[data-role^='factory-tree-repo'] .sf-item-detail { grid-column: 4; }
-[data-role='factory-tree'] .sf-item[data-role='factory-tree-repo-quiet'] { opacity: 0.7; }
-
-/* Agent and subagent rows: three label cells, then the status. */
-[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'] .sf-item-label,
-[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] .sf-item-label {
+/* Native lists virtualize above 200 items, and virtualized items drop their
+   data-role, so row layout keys off span position; the row-kind rules below only
+   add emphasis. Every row has three label cells, then its status: a repository's
+   summary alone, else a dot, a label and (agent rows) a note that gives way first. */
+[data-role='factory-tree'] .sf-item-label {
   grid-column: 1 / span 3;
   display: grid;
   grid-template-columns: minmax(0, 1fr) var(--tree-worktree) var(--tree-session);
   column-gap: 8px;
 }
-[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'] .sf-item-label > span:first-child { padding-left: 18px; }
-[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] { background: color-mix(in srgb, var(--l1) 50%, transparent); }
-[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] .sf-item-label > span:first-child { padding-left: 34px; }
-[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] .sf-item-label > span:nth-child(3),
-[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'] .sf-item-label > span:nth-child(2) {
-  font-family: var(--mono);
-  font-size: 11px;
-}
-/* Status: dot, label, then a note that gives way first. */
-[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'] .sf-item-detail,
-[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] .sf-item-detail {
+[data-role='factory-tree'] .sf-item-detail {
   grid-column: 4;
   display: flex;
   align-items: center;
   gap: 7px;
 }
-[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'] .sf-item-detail > span:first-child,
-[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] .sf-item-detail > span:first-child {
+[data-role='factory-tree'] .sf-item-detail > span:first-child:not(:last-child) {
   flex: none;
   width: 7px;
   height: 7px;
@@ -271,6 +246,29 @@
 }
 [data-role='factory-tree'] .sf-item-detail > span:nth-child(2) { flex: none; }
 [data-role='factory-tree'] .sf-item-detail > span:nth-child(3) { flex: 1; font-size: 11px; }
+
+/* Repository rows: name, branch and worktree count flow together. */
+[data-role='factory-tree'] .sf-item[data-role^='factory-tree-repo'] {
+  background: var(--l1);
+}
+[data-role='factory-tree'] .sf-item[data-role^='factory-tree-repo'] .sf-item-label {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+[data-role='factory-tree'] .sf-item[data-role^='factory-tree-repo'] .sf-item-label > span:first-child { flex: 0 1 auto; font-size: 13px; }
+[data-role='factory-tree'] .sf-item[data-role^='factory-tree-repo'] .sf-item-label > span:not(:first-child) { flex: 0 1 auto; font-size: 11px; }
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-repo-quiet'] { opacity: 0.7; }
+
+/* Agent and subagent rows: indented under their repository. */
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'] .sf-item-label > span:first-child { padding-left: 18px; }
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] { background: color-mix(in srgb, var(--l1) 50%, transparent); }
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] .sf-item-label > span:first-child { padding-left: 34px; }
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-sub'] .sf-item-label > span:nth-child(3),
+[data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'] .sf-item-label > span:nth-child(2) {
+  font-family: var(--mono);
+  font-size: 11px;
+}
 [data-role='factory-tree'] .sf-item[data-role='factory-tree-agent'][data-tone='accent'] .sf-item-detail > span:first-child {
   animation: tern-software-factory-working 2.2s ease-in-out infinite;
 }

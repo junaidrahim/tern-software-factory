@@ -623,6 +623,17 @@ assert(#summaries == 4)
 summaries[4].done({ status = 0, stdout = "Deploys the parser fix.", stderr = "", timed_out = false })
 tick(cx)
 assert(state.agents[1].task == "Deploys the parser fix.")
+-- Steps trimmed from a long read are not recorded again as new activity.
+local many = {}
+for i = 1, 45 do table.insert(many, { key = "m" .. i, name = "bash", command = "step " .. i }) end
+messages = { { role = "assistant", text = "", tools = many } }
+now += 60000
+tick(cx)
+assert(#summaries == 5)
+summaries[5].done({ status = 0, stdout = "Runs many steps.", stderr = "", timed_out = false })
+now += 60000
+tick(cx)
+assert(#summaries == 5, "Steps trimmed from the log are not new activity")
 cx.agents.transcript = function() return {} end
 -- A Software Factory block whose program exited must not stop updates to a live one.
 table.insert(panes, 1, { pane = 700, kind = "plugin", block = "tern-software-factory.agents", tab = 10 })
@@ -732,6 +743,11 @@ key("enter"); open_route()
 assert(focused == 8589934842)
 key("home"); key("page_down")
 assert(state.selected == 8589934602, "Page down moves ten rows, counting the group row")
+local renders = 0
+blockCx.render = function() renders += 1 end
+hostTick()
+assert(renders == 0, "An unchanged Agents list that shows no ages is not redrawn each second")
+blockCx.render = function() end
 cx.agents.list = function() error("Host disconnected") end
 repeat
 	local callback = windowTick

@@ -172,6 +172,14 @@ print("PASS: Models direct links, navigation, UTF-16-safe editing, persistence a
 data.error, data.setup = "Authentication failed; cached data retained.", true
 assert(#rows() == 5, "Cached rows remain usable during authentication errors")
 assert(text(render().main):find(data.error, 1, true))
+state.models.query, data.loading = "no-such-model", true
+local list = find(render().main, "grid").c[2]
+assert(#list.c == 0 and list.p.empty[1].t == "No models match this search.",
+	"A cached snapshot never claims to be loading or unconfigured when search hides every row")
+assert(find(render().main, "refresh").c[1].p.text == "Refresh", "Cache reads and key saves are not labeled as refreshes")
+data.refreshing = true
+assert(find(render().main, "refresh").c[1].p.text == "Refreshing…")
+state.models.query, data.loading, data.refreshing = "", false, false
 state = { models = page.init({ selected = "b", sort = "invalid", query = tern.json.null }) }
 data.snapshot = { models = {}, fetched_at = tern.json.null, index_version = tern.json.null }
 data.error = nil

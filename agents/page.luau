@@ -321,7 +321,8 @@ local function create(h)
 		end,
 		key = function(state, key, cx)
 			local list = entries(state)
-			local entry = list[current(state, list)]
+			local index = current(state, list)
+			local entry = list[index]
 			if key.name == "enter" and key.meta and not key.ctrl and not key.alt then
 				if entry and entry.kind == "group" and not entry.group.other then launch(entry, cx, true) end
 				return true
@@ -329,7 +330,6 @@ local function create(h)
 			if key.ctrl or key.alt or key.meta then return false end
 			if key.name == "r" then h.repositories.scan(state, cx); return true end
 			if not entry then return false end
-			local index = current(state, list)
 			if key.name == "enter" or key.name == "space" then open(state, entry, cx); return true end
 			if key.name == "c" then ask_carly(entry, cx); return true end
 			if key.name == "down" or key.name == "j" then index = math.min(#list, index + 1)

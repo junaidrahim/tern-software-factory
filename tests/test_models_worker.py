@@ -356,6 +356,9 @@ class ModelsWorkerTests(unittest.TestCase):
         self.assertEqual(worker.quota_reset({"Retry-After": formatted}, self.now), until)
         self.assertEqual(worker.quota_reset({"RateLimit-Reset": "300"}, self.now), self.now + 300)
         self.assertEqual(worker.quota_reset({"Retry-After": "nan", "X-RateLimit-Reset": "garbage"}, self.now), self.now + 86400)
+        self.assertEqual(worker.quota_reset({"Retry-After": str(30 * 86400), "X-RateLimit-Reset": str(self.now + 90 * 86400)},
+                                            self.now), self.now + worker.QUOTA_WINDOW_SECONDS,
+                         "A reset beyond the 24-hour quota window cannot pause refresh longer")
         self.responses = [(429, {}, b"")]
         result = self.call()
         self.assertEqual(result["snapshot"], worker.empty_snapshot())

@@ -174,7 +174,8 @@ class RepositoryWorkerTests(unittest.TestCase):
 
     def test_generated_folders_and_git_metadata_are_pruned(self):
         main = self.repository(self.root / "main")
-        for name in [".cache", "node_modules", ".venv", "venv", "target", "dist", "build", "__pycache__"]:
+        for name in [".cache", "node_modules", ".venv", "venv", "target", "dist", "build", "__pycache__",
+                     ".mypy_cache", ".pytest_cache", ".ruff_cache"]:
             self.repository(self.root / name / "hidden")
         self.repository(main / ".git" / "hidden")
         visible = self.repository(self.root / ".custom" / "visible")
@@ -242,14 +243,16 @@ class RepositoryWorkerTests(unittest.TestCase):
         self.assertEqual(result.stderr, "")
 
     def test_invalid_json_stdio_reports_error(self):
-        result = subprocess.run(
-            [sys.executable, str(WORKER_PATH)], input="not json", stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, encoding="utf-8", env=self.env, timeout=20, check=True,
-        )
-        response = json.loads(result.stdout)
-        self.assertFalse(response["ok"])
-        self.assertIn("Invalid repository request", response["error"])
-        self.assertEqual(result.stderr, "")
+        for payload in ("not json", "[" * worker.MAX_REQUEST):
+            with self.subTest(payload=payload[:20]):
+                result = subprocess.run(
+                    [sys.executable, str(WORKER_PATH)], input=payload, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, encoding="utf-8", env=self.env, timeout=20, check=True,
+                )
+                response = json.loads(result.stdout)
+                self.assertFalse(response["ok"])
+                self.assertIn("Invalid repository request", response["error"])
+                self.assertEqual(result.stderr, "")
 
 
 if __name__ == "__main__":

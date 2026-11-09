@@ -152,16 +152,18 @@ local function track(cx, pane, cwd, home, covered)
 	paths[pane] = tracking.changed(messages, cwd, home) or paths[pane]
 	local log = logs[pane] or { seen = {}, entries = {} }
 	logs[pane] = log
+	local seen = {}
 	for _, entry in tracking.activity(messages) do
-		if not log.seen[entry.key] then
-			log.seen[entry.key] = true
+		if not log.seen[entry.key] and not seen[entry.key] then
 			table.insert(log.entries, { key = entry.key, line = entry.line, at = tern.now() })
 		end
+		seen[entry.key] = true
 	end
-	while #log.entries > 40 do
-		log.seen[log.entries[1].key] = nil
-		table.remove(log.entries, 1)
-	end
+	while #log.entries > 40 do table.remove(log.entries, 1) end
+	-- Steps of this read stay seen after they are trimmed, or the next read would
+	-- record them again as new activity.
+	for _, entry in log.entries do seen[entry.key] = true end
+	log.seen = seen
 end
 
 local function summarize(pane)
@@ -384,13 +386,15 @@ local function publish(cx)
 		if is_factory(pane) then table.insert(scan.blocks, pane) end
 	end
 	-- Entries of closed blocks leave the store, including blocks whose program exited.
+	-- The block's host half may have cleared them already; each write rewrites the store.
 	local open = {}
 	for _, block in scan.blocks do open[key(block.pane)] = true end
 	for block_key in written do
 		if not open[block_key] then
 			written[block_key] = nil
-			tern.kv.set("snapshot:" .. block_key, nil)
-			tern.kv.set("details:" .. block_key, nil)
+			for _, kind in { "snapshot", "details" } do
+				if tern.kv.get(kind .. ":" .. block_key) ~= nil then tern.kv.set(kind .. ":" .. block_key, nil) end
+			end
 		end
 	end
 	-- omp runs only while a Software Factory block is open.

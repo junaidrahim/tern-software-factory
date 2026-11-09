@@ -55,6 +55,9 @@ assert(#groups[1].agents == 3 and #groups[2].agents == 1, "/code/app2 is not ins
 assert(tree.describe(groups[1].agents[1].checkout) == "main checkout · main")
 assert(tree.describe(groups[1].agents[2].checkout) == "fix · fix/login", "A worktree inside its repository claims its agents")
 assert(tree.describe(groups[1].agents[3].checkout) == "app-feature · feature/x")
+local edge = tree.group(repos, { { pane = 9, cwd = "/code/app//src/" }, { pane = 10, cwd = "code/app" }, { pane = 11, cwd = "/" } })
+assert(#edge[1].agents == 1 and edge[1].agents[1].checkout.main and edge[2].other and #edge[2].agents == 2,
+	"A repeated slash stays inside its checkout; relative and root directories are outside every repository")
 
 -- The page, with the Agents page's helpers stubbed.
 local statuses = {

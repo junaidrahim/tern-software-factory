@@ -19,16 +19,23 @@ SPEC.loader.exec_module(worker)
 
 def pull(number, *, identity="owner/repo", updated="2026-10-18T12:00:00Z", **extra):
     row = {
-        "number": number, "title": f"Change {number} 雪", "html_url": f"https://github.com/{identity}/pull/{number}",
-        "user": {"login": "contributor"}, "draft": False,
-        "head": {"ref": "feature/雪"}, "base": {"ref": "main"}, "updated_at": updated,
+        "number": number, "title": f"Change {number} 雪", "url": f"https://github.com/{identity}/pull/{number}",
+        "author": {"login": "contributor"}, "isDraft": False,
+        "headRefName": "feature/雪", "baseRefName": "main", "updatedAt": updated,
     }
     row.update(extra)
     return row
 
 
-def endpoint(identity, page=1):
-    return f"repos/{identity}/pulls?state=open&sort=updated&direction=desc&per_page=100&page={page}"
+def endpoint(identity, after=None):
+    return f"pulls {identity} after={after}"
+
+
+def connection(nodes, *, total=None, cursor=None):
+    return {"data": {"repository": {"pullRequests": {
+        "totalCount": len(nodes) if total is None else total,
+        "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor}, "nodes": nodes,
+    }}}}
 
 
 class FakeCommands:
@@ -37,13 +44,22 @@ class FakeCommands:
         self.responses = {"user": {"login": "fixture-user"}, **(responses or {})}
         self.calls = []
 
+    @staticmethod
+    def request(arguments):
+        if arguments[1:5] == ["api", "--hostname", "github.com", "user"] and len(arguments) == 5:
+            return "user"
+        if arguments[1:5] != ["api", "graphql", "--hostname", "github.com"]:
+            raise AssertionError(f"Unexpected gh command: {arguments}")
+        fields = dict(value.split("=", 1) for flag, value in zip(arguments[5::2], arguments[6::2]))
+        if fields.get("first") != str(worker.PAGE_SIZE) or "pullRequests" not in fields.get("query", ""):
+            raise AssertionError(f"Unexpected GitHub query: {arguments}")
+        return endpoint(f"{fields['owner']}/{fields['name']}", fields.get("after"))
+
     def __call__(self, arguments, **kwargs):
         self.calls.append((arguments, kwargs))
         if arguments[0] != "/fixture/gh":
             return subprocess.run(arguments, **kwargs)
-        if arguments[1:4] != ["api", "--hostname", "github.com"]:
-            raise AssertionError(f"Unexpected gh command: {arguments}")
-        url = arguments[4]
+        url = self.request(arguments)
         if url not in self.responses:
             raise AssertionError(f"Unexpected GitHub request: {url}")
         response = self.responses[url]
@@ -51,10 +67,12 @@ class FakeCommands:
             raise response
         if isinstance(response, subprocess.CompletedProcess):
             return response
+        if isinstance(response, list):
+            response = connection(response)
         return subprocess.CompletedProcess(arguments, 0, json.dumps(response).encode(), b"")
 
     def api_calls(self):
-        return [args[4] for args, kwargs in self.calls if args[0] == "/fixture/gh"]
+        return [self.request(args) for args, kwargs in self.calls if args[0] == "/fixture/gh"]
 
 
 class RemoteTests(unittest.TestCase):
@@ -106,14 +124,14 @@ class RemoteTests(unittest.TestCase):
             "https://github.com/owner/repo/pull/1#", "https://github.com/owner/repo/pull/1\n", None,
         ):
             with self.subTest(url=url), self.assertRaises(worker.GitHubError):
-                worker.pull_request(pull(1, html_url=url), "owner/repo")
+                worker.pull_request(pull(1, url=url), "owner/repo")
 
     def test_pr_schema_and_deleted_author(self):
-        row, date = worker.pull_request(pull(3, user=None, draft=True), "owner/repo")
+        row = worker.pull_request(pull(3, author=None, isDraft=True), "owner/repo")
         self.assertEqual(row["author"], "")
         self.assertTrue(row["draft"])
         self.assertEqual(row["head"], "feature/雪")
-        for overrides in ({"number": True}, {"number": 0}, {"title": None}, {"draft": "false"}, {"head": None}, {"updated_at": "yesterday"}, {"updated_at": "2026-10-18T12:00:00"}):
+        for overrides in ({"number": True}, {"number": 0}, {"title": None}, {"isDraft": "false"}, {"headRefName": None}, {"updatedAt": "yesterday"}, {"updatedAt": "2026-10-18T12:00:00"}):
             with self.subTest(overrides=overrides), self.assertRaises(worker.GitHubError):
                 worker.pull_request(pull(1, **overrides) if "number" not in overrides else {**pull(1), **overrides}, "owner/repo")
 
@@ -197,31 +215,43 @@ class GitHubWorkerTests(unittest.TestCase):
         self.assertNotIn("secret", json.dumps(result))
         self.assertNotIn(credential, json.dumps(result))
 
-    def test_paginated_prs_complete_deduplicated_newest_first_with_number_tie(self):
+    def test_refresh_loads_only_first_page_with_total_and_cursor(self):
         self.repository("repo", {"origin": "git@github.com:owner/repo"})
-        first = [pull(number) for number in range(1, 101)]
-        second = [pull(50, updated="2026-10-19T12:00:00Z"), pull(101, updated="2026-10-17T12:00:00Z")]
-        result, commands = self.execute({endpoint("owner/repo"): first, endpoint("owner/repo", 2): second})
+        first = [pull(number) for number in range(1, 26)] + [pull(3)]
+        result, commands = self.execute({endpoint("owner/repo"): connection(first, total=4888, cursor="Y3Vyc29yOjI1")})
         self.assertTrue(result["ok"], result)
-        rows = result["repos"][0]["prs"]
-        self.assertEqual(len(rows), 101)
-        self.assertEqual([row["number"] for row in rows], [50] + [number for number in range(1, 101) if number != 50] + [101])
-        self.assertEqual(commands.api_calls(), ["user", endpoint("owner/repo"), endpoint("owner/repo", 2)])
+        row = result["repos"][0]
+        self.assertEqual([pr["number"] for pr in row["prs"]], list(range(1, 26)), "Server order kept; duplicates dropped")
+        self.assertEqual((row["total"], row["cursor"]), (4888, "Y3Vyc29yOjI1"))
+        self.assertEqual(commands.api_calls(), ["user", endpoint("owner/repo")])
 
-    def test_three_pages_have_no_cli_default_limit(self):
+    def test_last_page_has_no_cursor(self):
         self.repository("repo", {"origin": "git@github.com:owner/repo"})
-        result, commands = self.execute({
-            endpoint("owner/repo"): [pull(number) for number in range(1, 101)],
-            endpoint("owner/repo", 2): [pull(number) for number in range(101, 201)],
-            endpoint("owner/repo", 3): [pull(number) for number in range(201, 251)],
-        })
-        self.assertTrue(result["ok"], result)
-        self.assertEqual([row["number"] for row in result["repos"][0]["prs"]], list(range(1, 251)))
-        self.assertEqual(len(commands.api_calls()), 4)
+        result, commands = self.execute({endpoint("owner/repo"): [pull(1)]})
+        self.assertEqual(result["repos"][0]["total"], 1)
+        self.assertNotIn("cursor", result["repos"][0])
+
+    def test_next_page_request_skips_discovery_and_authentication(self):
+        commands = FakeCommands({endpoint("owner/repo", "Y3Vyc29yOjI1"): connection([pull(26)], total=26)})
+        result = worker.execute({"repo": "owner/repo", "after": "Y3Vyc29yOjI1"}, runner=commands)
+        self.assertEqual(result, {"ok": True, "repo": "owner/repo", "prs": [worker.pull_request(pull(26), "owner/repo")], "total": 26})
+        self.assertEqual(commands.api_calls(), [endpoint("owner/repo", "Y3Vyc29yOjI1")])
+        for request in ({"repo": "../repo", "after": "abc"}, {"repo": "owner/repo", "after": "a b"}, {"repo": "owner/repo"},
+                        {"repo": "https://github.com/owner/repo", "after": "abc"}, {"repo": "owner/repo", "after": "x" * 513}):
+            with self.subTest(request=request):
+                commands = FakeCommands()
+                result = worker.execute(request, runner=commands)
+                self.assertFalse(result["ok"])
+                self.assertEqual(commands.calls, [])
+        failure = FakeCommands({endpoint("owner/repo", "abc"): subprocess.CompletedProcess([], 1, b"", b"HTTP 403 secret")})
+        result = worker.execute({"repo": "owner/repo", "after": "abc"}, runner=failure)
+        self.assertFalse(result["ok"])
+        self.assertIn("denied", result["error"])
+        self.assertNotIn("secret", json.dumps(result))
 
     def test_repository_access_failures_remain_visible(self):
         self.repository("repo", {"origin": "git@github.com:owner/repo"})
-        for detail, message in ((b"HTTP 403 secret", "denied"), (b"HTTP 404 secret", "lacks access")):
+        for detail, message in ((b"HTTP 403 secret", "denied"), (b"gh: Could not resolve to a Repository with the name 'secret'.", "lacks access")):
             with self.subTest(detail=detail):
                 result, commands = self.execute({endpoint("owner/repo"): subprocess.CompletedProcess([], 1, b"", detail)})
                 self.assertTrue(result["ok"], result)
@@ -243,28 +273,22 @@ class GitHubWorkerTests(unittest.TestCase):
         self.assertIn("could not read", " ".join(result["warnings"]))
         self.assertNotIn("secret", json.dumps(result))
 
-    def test_exact_full_page_requests_terminating_page(self):
+    def test_more_pages_without_valid_cursor_is_error_not_truncated_success(self):
         self.repository("repo", {"origin": "git@github.com:owner/repo"})
-        result, commands = self.execute({endpoint("owner/repo"): [pull(number) for number in range(1, 101)], endpoint("owner/repo", 2): []})
-        self.assertEqual(len(result["repos"][0]["prs"]), 100)
-        self.assertIn(endpoint("owner/repo", 2), commands.api_calls())
+        for cursor in ("", "bad cursor", None):
+            response = connection([pull(1)], total=50, cursor="placeholder")
+            response["data"]["repository"]["pullRequests"]["pageInfo"]["endCursor"] = cursor
+            with self.subTest(cursor=cursor):
+                result, commands = self.execute({endpoint("owner/repo"): response})
+                self.assertTrue(result["ok"])
+                self.assertIn("invalid pull request page", result["repos"][0]["error"])
+                self.assertEqual(result["repos"][0]["prs"], [])
 
-    def test_repeated_page_is_error_not_truncated_success(self):
-        self.repository("repo", {"origin": "git@github.com:owner/repo"})
-        page = [pull(number) for number in range(1, 101)]
-        result, commands = self.execute({endpoint("owner/repo"): page, endpoint("owner/repo", 2): page})
-        self.assertTrue(result["ok"])
-        self.assertIn("repeated", result["repos"][0]["error"])
-        self.assertEqual(result["repos"][0]["prs"], [])
-
-    def test_failed_later_page_discards_partial_pr_list_but_retains_other_repos(self):
+    def test_failed_repository_retains_other_repos(self):
         self.repository("a", {"origin": "git@github.com:owner/a"})
         self.repository("b", {"origin": "git@github.com:owner/b"})
         failure = subprocess.CompletedProcess([], 1, b"", b"HTTP 503 secret-credential https://secret@example.com")
-        result, commands = self.execute({
-            endpoint("owner/a"): [pull(number, identity="owner/a") for number in range(1, 101)],
-            endpoint("owner/a", 2): failure, endpoint("owner/b"): [pull(1, identity="owner/b")],
-        })
+        result, commands = self.execute({endpoint("owner/a"): failure, endpoint("owner/b"): [pull(1, identity="owner/b")]})
         self.assertTrue(result["ok"], result)
         self.assertIn("error", result["repos"][0])
         self.assertEqual(result["repos"][0]["prs"], [])
@@ -288,9 +312,9 @@ class GitHubWorkerTests(unittest.TestCase):
         self.repository("a", {"origin": "git@github.com:owner/a"})
         self.repository("b", {"origin": "git@github.com:owner/b"})
         original = worker.Client.pulls
-        def expire(client, identity):
+        def expire(client, identity, after=None):
             client.until = -1
-            return original(client, identity)
+            return original(client, identity, after)
         with mock.patch.object(worker.Client, "pulls", expire):
             result, commands = self.execute()
         self.assertTrue(result["ok"], result)
@@ -314,7 +338,7 @@ class GitHubWorkerTests(unittest.TestCase):
 
     def test_invalid_api_data_and_unsafe_pr_url_are_repo_errors(self):
         self.repository("repo", {"origin": "git@github.com:owner/repo"})
-        for response in ({"message": "not a list"}, [pull(1, html_url="https://evil.test/secret")], subprocess.CompletedProcess([], 0, b"not JSON secret", b"")):
+        for response in ({"message": "not a list"}, [pull(1, url="https://evil.test/secret")], subprocess.CompletedProcess([], 0, b"not JSON secret", b"")):
             with self.subTest(response=response):
                 result, commands = self.execute({endpoint("owner/repo"): response})
                 self.assertTrue(result["ok"])

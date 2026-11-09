@@ -167,7 +167,7 @@ def main():
             result = {"ok": False, "error": "Agent request exceeds the size limit."}
         else:
             result = execute(json.loads(data))
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         result = {"ok": False, "error": "Invalid agent request JSON."}
     print(json.dumps(result, ensure_ascii=True, allow_nan=False))
 

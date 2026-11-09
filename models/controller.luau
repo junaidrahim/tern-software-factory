@@ -5,7 +5,7 @@ local subscribers, queue = {}, {}
 local shared = {
 	snapshot = { models = {}, fetched_at = nil, index_version = nil },
 	loading = false, refreshing = false, error = nil, setup = false,
-	key_path = tern.plugin.data .. "/artificial-analysis-api-key", version = 0,
+	key_path = tern.plugin.data .. "/artificial-analysis-api-key",
 }
 local started, active, next_refresh = false, nil, 0
 local pump
@@ -72,10 +72,8 @@ pump = function()
 		end
 		if answer and type(answer.snapshot) == "table" and type(answer.snapshot.models) == "table" then
 			shared.snapshot = answer.snapshot
-			shared.version += 1
 			shared.setup = answer.setup == true
 			shared.error = if type(answer.error) == "string" then answer.error else nil
-			shared.received_at = tern.now()
 		else
 			shared.error = failure or "Models worker returned no snapshot."
 		end

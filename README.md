@@ -90,7 +90,8 @@ prompt delivery error when there is one. Rows leave out Nerd Font icons, such as
 the one omp puts before its session titles. A pulsing dot marks working agents.
 Amber pulses mark agents that need input; red pulses mark failed turns or prompt
 delivery. Idle dots stay still. The pulses respect Tern's Reduce Motion setting
-and stop when the pane is hidden.
+and stop when the pane is hidden. Above 200 rows Tern virtualizes the list, which
+drops per-row styling: pulses, indentation, and row backgrounds go, the columns stay.
 
 To write the agent task, the plugin notes each chat step (requests, replies, and
 tool calls) when it first appears in an agent's omp chat. When an agent has new
@@ -156,7 +157,8 @@ outside the root still appear beneath their repository. Scanning runs on the
 block's host when Agents is opened and on demand, using Git and `uv` (Python
 3.11+, standard library only). It does not modify repositories. Directory
 symlinks are not followed; Git metadata and common generated folders (`.cache`,
-`node_modules`, `.venv`, `venv`, `target`, `dist`, `build`, `__pycache__`) are
+`node_modules`, `.venv`, `venv`, `target`, `dist`, `build`, `__pycache__`,
+`.mypy_cache`, `.pytest_cache`, `.ruff_cache`) are
 skipped. Individual failures are shown as warnings under the heading; a scan
 deadline reports an error rather than presenting a silently incomplete list.
 
@@ -191,15 +193,19 @@ remotes are supported; GitHub Enterprise hosts are not included.
 
 Repository names sort alphabetically. PRs sort by latest update, with their
 number, title, author, draft/open state, and source/target branches. Hover for
-the full details. All pages of open PRs are fetched; closed and merged PRs are
-not included.
+the full details. Each repository shows its open PR count and loads the 10 most
+recently updated PRs; a **Load more** row under them fetches the next 10.
+Repositories load in parallel and start collapsed (▸); Enter or double-click
+expands one (▾). Each block remembers which repositories it expanded.
+Repositories without open PRs are marked ◦. Closed and merged PRs are not included.
 
 | Control | GitHub action |
 | --- | --- |
-| Up / Down or j / k | Select a repository or PR |
-| Enter / o or double-click | Open the selected repository or PR on GitHub |
+| Up / Down or j / k | Select a repository, PR, or Load more row |
+| Enter or double-click | Expand or collapse a repository, open a PR on GitHub, or load the next 10 PRs |
+| o | Open the selected repository or PR on GitHub |
 | Home / End; Page Up / Page Down | Move to an end or by ten rows |
-| Refresh or r | Rescan the root and reload open PRs |
+| Refresh or r | Rescan the root and reload the first page of open PRs |
 
 Data loads on the first visit and when the configured root changes. Blocks on
 one host share a serialized worker and in-memory snapshot; switching pages
@@ -500,6 +506,9 @@ Run the worker's isolated local-HTTP/SQLite tests with:
 uv run --with 'feedparser>=6.0.11,<7' \
   python -m unittest discover -s tests -p test_news_worker.py
 ```
+
+The workers need Python 3.11+; if `python3` is older, prefix the commands below with
+`uv run --no-project --python '>=3.11'`.
 
 Run Models worker tests (Python standard library only) with:
 

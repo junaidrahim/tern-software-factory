@@ -25,6 +25,7 @@ ENDPOINT = "https://artificialanalysis.ai/api/v2/language/models/free?page="
 REFRESH_SECONDS = 6 * 3600
 FETCH_SECONDS = 15
 TOTAL_SECONDS = 90
+QUOTA_WINDOW_SECONDS = 86400
 MAX_REQUEST = 16384
 MAX_PAGE_BYTES = 2 * 1024 * 1024
 MAX_CACHE_BYTES = 16 * 1024 * 1024
@@ -181,7 +182,9 @@ def quota_reset(headers, now):
         except (ValueError, TypeError):
             pass
     future = [value for value in candidates if value > now]
-    return max(future) if future else now + 86400
+    # The free quota resets within a 24-hour window; a larger or missing reset
+    # must not pause refresh beyond it.
+    return min(max(future), now + QUOTA_WINDOW_SECONDS) if future else now + QUOTA_WINDOW_SECONDS
 
 
 def fetch_snapshot(fetcher, key, now):

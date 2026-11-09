@@ -54,8 +54,11 @@
   border-bottom: 1px solid var(--l2);
 }
 [data-role='factory-github-tree'] .sf-item:last-child { border-bottom: 0; }
+/* Virtualized items drop their data-role, so row layout keys off span position:
+   repository and load-more rows have two spans, PR rows add a third (author/branches). */
 [data-role='factory-github-tree'] .sf-item-label {
-  display: grid;
+  display: flex;
+  align-items: center;
   width: 100%;
   min-width: 0;
   max-width: none;
@@ -65,17 +68,17 @@
   font-size: 12px;
   line-height: var(--sf-lh);
 }
-[data-role='factory-github-repository'] .sf-item-label { grid-template-columns: auto minmax(0, 1fr); }
-[data-role='factory-github-tree'] [data-role='factory-github-pr'] { padding-left: 18px; }
-[data-role='factory-github-pr'] .sf-item-label { grid-template-columns: auto minmax(0, 1fr) minmax(0, 30%); }
 [data-role='factory-github-tree'] .sf-item-label > span {
   display: block;
+  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-[data-role='factory-github-pr'] .sf-item-label > span:first-child { font-variant-numeric: tabular-nums; }
+/* Content-sized but shrinkable: long repository names and page errors ellipsize instead of clipping. */
+[data-role='factory-github-tree'] .sf-item-label > span:first-child { flex: 0 1 auto; font-variant-numeric: tabular-nums; }
+[data-role='factory-github-tree'] .sf-item-label > span:nth-child(3) { flex: 0 1 30%; }
 [data-role='factory-github-tree'] .sf-item-ic,
 [data-role='factory-github-tree'] .sf-item-detail,
 [data-role='factory-github-tree'] .sf-item-value,

@@ -15,6 +15,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -115,6 +116,10 @@ class NewsWorkerTests(unittest.TestCase):
 
     def story(self):
         return self.call("refresh")["snapshot"]["stories"][0]
+
+    def last_request(self, path):
+        """Concurrent downloads reach the server in any order."""
+        return next(headers for requested, headers in reversed(self.requests) if requested == path)
 
     def hn_source(self):
         return {"id": "hn", "name": "Hacker News", "kind": "hn_weekly",
@@ -583,8 +588,8 @@ class NewsWorkerTests(unittest.TestCase):
         self.assertIn(claude, second["stories"])
         self.assertIsNone(second["feeds"][0]["error"])
         self.assertIn("503", second["feeds"][1]["error"])
-        self.assertEqual(self.requests[2][1]["If-None-Match"], '"engineering"')
-        self.assertEqual(self.requests[3][1]["If-None-Match"], '"claude"')
+        self.assertEqual(self.last_request("/engineering")["If-None-Match"], '"engineering"')
+        self.assertEqual(self.last_request("/claude.xml")["If-None-Match"], '"claude"')
         self.now += 3600
         self.routes["/engineering"] = (200, {}, b"<!DOCTYPE html><html>No usable data</html>")
         self.routes["/claude.xml"] = (200, {"ETag": '"claude-next"'}, rss([
@@ -595,8 +600,8 @@ class NewsWorkerTests(unittest.TestCase):
         self.assertTrue(third["feeds"][0]["error"])
         self.assertIsNone(third["feeds"][1]["error"])
         self.assertEqual(third["feeds"][0]["last_success"], second["feeds"][0]["last_success"])
-        self.assertEqual(self.requests[4][1]["If-None-Match"], '"engineering-next"')
-        self.assertEqual(self.requests[5][1]["If-None-Match"], '"claude"')
+        self.assertEqual(self.last_request("/engineering")["If-None-Match"], '"engineering-next"')
+        self.assertEqual(self.last_request("/claude.xml")["If-None-Match"], '"claude"')
         self.now += 3600
         self.routes["/engineering"] = self.routes["/claude.xml"] = (304, {}, b"")
         cached = self.call("refresh")["snapshot"]
@@ -618,7 +623,30 @@ class NewsWorkerTests(unittest.TestCase):
         self.assertEqual(story["published_at"], 1_700_000_000)
         self.assertNotIn("excerpt", story)
         self.assertNotIn("text", story)
-        self.assertEqual([path for path, _ in self.requests], ["/rss", "/atom"])
+        self.assertCountEqual([path for path, _ in self.requests], ["/rss", "/atom"])
+
+    def test_stalled_source_times_out_without_delaying_other_feeds(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        network = self.fetcher
+
+        def fetch(url, headers, max_bytes):
+            if url.endswith("/stalled"):
+                release.wait(30)  # Like DNS, no socket timeout interrupts this.
+                raise worker.NewsError("released")
+            return network(url, headers, max_bytes)
+
+        self.fetcher = fetch
+        self.sources.insert(0, {"id": "stalled", "name": "Stalled", "url": self.origin + "/stalled"})
+        started = time.monotonic()
+        with patch.object(worker, "FETCH_SECONDS", 0.2):
+            snapshot = self.call("refresh")["snapshot"]
+        self.assertLess(time.monotonic() - started, 5)
+        feeds = {feed["id"]: feed for feed in snapshot["feeds"]}
+        self.assertIn("timed out", feeds["stalled"]["error"])
+        self.assertIsNone(feeds["stalled"]["last_success"])
+        self.assertIsNone(feeds["rss"]["error"])
+        self.assertEqual([story["sources"][0]["id"] for story in snapshot["stories"]], ["rss"])
 
     def test_conditional_fetch_due_schedule_and_snapshot_are_cache_only(self):
         payload = self.routes["/rss"][2]

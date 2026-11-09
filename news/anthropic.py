@@ -15,6 +15,7 @@ from urllib.parse import urljoin, urlsplit
 
 
 _FLIGHT_PUSH = re.compile(r"self\.__next_f\.push\s*\(\s*")
+_CLOSE_CALL = re.compile(r"\s*\)")
 _SLUG = re.compile(r"[A-Za-z0-9_-]+\Z")
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}(?:T.*)?\Z")
 
@@ -49,7 +50,7 @@ def _flight_records(scripts):
                 payload, position = decoder.raw_decode(script, match.end())
             except (ValueError, RecursionError) as error:
                 raise ValueError("Malformed Anthropic engineering data") from error
-            if not script[position:].lstrip().startswith(")"):
+            if not _CLOSE_CALL.match(script, position):
                 raise ValueError("Malformed Anthropic engineering data")
             if isinstance(payload, list) and len(payload) == 2 and payload[0] == 1:
                 if not isinstance(payload[1], str):

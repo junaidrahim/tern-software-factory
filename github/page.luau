@@ -2,6 +2,7 @@
 local ui = tern.ui
 local controller = require("./controller")
 local LIST = "main.github.tree"
+local ITEM = LIST .. "."
 
 -- Keep each native list cell one span, including titles containing Nerd Font icons.
 local function plain(value)
@@ -12,30 +13,49 @@ local function plain(value)
 		:gsub("[%c]", " "))
 end
 
-local function row_key(repo, pr)
-	-- Hex escapes make native item IDs unambiguous even for names containing dots.
-	local id = repo.id:gsub("[^%w-]", function(char) return string.format("_%02x", string.byte(char)) end)
-	return "r" .. id .. (if pr then ".pr" .. tostring(pr.number) else "")
+-- Hex escapes make native item IDs unambiguous even for names containing dots.
+local function row_key(repo)
+	return "r" .. repo.id:gsub("[^%w-]", function(char) return string.format("_%02x", string.byte(char)) end)
 end
 
-local function entries(data)
+-- Repositories start collapsed; `expanded` holds the repository row keys this pane unfolded.
+local function entries(data, expanded)
 	local rows = {}
 	for _, repo in data.repos do
-		table.insert(rows, { id = row_key(repo), repo = repo })
-		for _, pr in repo.prs do table.insert(rows, { id = row_key(repo, pr), repo = repo, pr = pr }) end
+		local id = row_key(repo)
+		table.insert(rows, { id = id, repo = repo })
+		if expanded[id] then
+			for _, pr in repo.prs do table.insert(rows, { id = id .. ".pr" .. tostring(pr.number), repo = repo, pr = pr }) end
+			if type(repo.cursor) == "string" then table.insert(rows, { id = id .. ".more", repo = repo, more = true }) end
+		end
 	end
 	return rows
 end
 
+local function total(repo)
+	return if type(repo.total) == "number" then repo.total else #repo.prs
+end
+
 local function selected_index(github, rows)
-	for i, row in rows do if row.id == github.selected then return i end end
+	local selected = github.selected
+	for i, row in rows do if row.id == selected then return i end end
+	-- A PR or load-more row folded away falls back to its repository row.
+	local parent = type(selected) == "string" and selected:match("^([^.]+)%.")
+	if parent then for i, row in rows do if row.id == parent then return i end end end
 	return 1
 end
 
+-- Without rows (not loaded yet) the saved selection is kept for when they arrive.
 local function reconcile(github, rows)
+	if #rows == 0 then return nil end
 	local index = selected_index(github, rows)
-	github.selected = rows[index] and rows[index].id
+	github.selected = rows[index].id
 	return index
+end
+
+local function toggle(github, row)
+	if #row.repo.prs == 0 then return end
+	github.expanded[row.id] = if github.expanded[row.id] then nil else true
 end
 
 local function open(row, cx)
@@ -55,35 +75,62 @@ local function message(key, role, value, tone)
 	return node
 end
 
+local function activate(github, row, cx)
+	if row.more then controller.more(row.repo.id)
+	elseif row.pr then open(row, cx)
+	else toggle(github, row) end
+end
+
 local function view(state)
 	local github, data = state.github, controller.get()
-	local visible, rows, count = entries(data), {}, 0
-	reconcile(github, visible)
+	local visible, rows, count = entries(data, github.expanded), {}, 0
+	local index = reconcile(github, visible)
+	-- Forget folds of repositories a completed load no longer lists, so saved state stays bounded.
+	local present = data.loaded and {}
 	for _, entry in visible do
 		local repo, pr = entry.repo, entry.pr
+		local name = plain(repo.name)
 		if pr then
-			count += 1
+			local number, title = tostring(pr.number), plain(pr.title)
 			local branches = plain(pr.head) .. " → " .. plain(pr.base)
 			local author = "@" .. plain(pr.author)
 			local status = if pr.draft then "Draft" else "Open"
 			table.insert(rows, ui.node("item", {
 				key = entry.id, role = "factory-github-pr",
-				label = { ui.span("↳ #" .. tostring(pr.number), "muted"), ui.span(plain(pr.title), "strong"),
+				label = { ui.span("↳ #" .. number, "muted"), ui.span(title, "strong"),
 					ui.span(author .. " · " .. status .. " · " .. branches, "muted") },
-				title = repo.name .. " #" .. tostring(pr.number) .. "\n" .. plain(pr.title) .. "\n" .. author .. " · " .. status
+				title = name .. " #" .. number .. "\n" .. title .. "\n" .. author .. " · " .. status
 					.. "\n" .. branches .. "\nUpdated: " .. plain(pr.updated_at) .. "\n" .. plain(pr.url),
-				aria = repo.name .. ", pull request " .. tostring(pr.number) .. ", " .. plain(pr.title) .. ", " .. author .. ", " .. status .. ", " .. branches,
+				aria = name .. ", pull request " .. number .. ", " .. title .. ", " .. author .. ", " .. status .. ", " .. branches,
+			}))
+		elseif entry.more then
+			local shown = tostring(#repo.prs) .. " of " .. tostring(total(repo)) .. " shown"
+			local status = if controller.loading_more(repo.id) then "Loading more…"
+				elseif repo.page_error then "Error: " .. plain(repo.page_error) .. " · Enter to retry"
+				else "Load more"
+			table.insert(rows, ui.node("item", {
+				key = entry.id, role = "factory-github-more", tone = if repo.page_error then "error" else nil,
+				label = { ui.span("↳ " .. status, if repo.page_error then "error" else "strong"), ui.span(shown, "muted") },
+				title = name .. "\n" .. shown, aria = name .. ", " .. status .. ", " .. shown,
 			}))
 		else
+			if present then present[entry.id] = true end
+			local open_count = total(repo)
+			count += open_count
+			local expanded = github.expanded[entry.id]
+			local marker = if #repo.prs == 0 then "◦ " elseif expanded then "▾ " else "▸ "
 			local status = if repo.error then "Error: " .. plain(repo.error) .. (if repo.stale then " · Showing last loaded PRs" else "")
-				elseif #repo.prs == 0 then "No open PRs" else tostring(#repo.prs) .. " open PR" .. (if #repo.prs == 1 then "" else "s")
+				elseif open_count == 0 then "No open PRs" else tostring(open_count) .. " open PR" .. (if open_count == 1 then "" else "s")
 			table.insert(rows, ui.node("item", {
 				key = entry.id, role = "factory-github-repository", tone = if repo.error then "error" else nil,
-				label = { ui.span(plain(repo.name), "strong"), ui.span(status, if repo.error then "error" else "muted") },
-				title = plain(repo.name) .. "\n" .. plain(repo.path) .. "\n" .. status .. "\n" .. plain(repo.url),
-				aria = plain(repo.name) .. ", " .. status,
+				label = { ui.span(marker .. name, "strong"), ui.span(status, if repo.error then "error" else "muted") },
+				title = name .. "\n" .. plain(repo.path) .. "\n" .. status .. "\n" .. plain(repo.url),
+				aria = name .. ", " .. status .. (if #repo.prs == 0 then "" elseif expanded then ", expanded" else ", collapsed"),
 			}))
 		end
+	end
+	if present then
+		for id in github.expanded do if not present[id] then github.expanded[id] = nil end end
 	end
 	local children = {
 		ui.node("row", { key = "heading", role = "factory-github-actions" }, {
@@ -108,31 +155,37 @@ local function view(state)
 		elseif data.loaded then "No GitHub repositories found in this root folder."
 		else "Refresh to load GitHub repositories."
 	table.insert(children, ui.node("list", {
-		key = "tree", role = "factory-github-tree", selected = if github.selected then LIST .. "." .. github.selected else nil,
+		key = "tree", role = "factory-github-tree", selected = if index then ITEM .. github.selected else nil,
 		empty = { ui.span(empty, "muted") }, max = 1,
 	}, rows))
 	return {
 		main = ui.node("col", {}, { ui.node("col", { key = "github", role = "factory-github" }, children) }),
 		dock = ui.node("col", { role = "factory-github-footer" }, {
-			ui.text({ ui.span("↑ ↓ / j k Select · Enter / o Open on GitHub · r Refresh", "muted") }),
+			ui.text({ ui.span("↑ ↓ / j k Select · Enter Expand repository, open PR or load more · o Open on GitHub · r Refresh", "muted") }),
 		}),
 	}
 end
 
 return {
 	init = function(saved)
-		return { selected = if type(saved) == "table" and type(saved.selected) == "string" then saved.selected else nil }
+		saved = if type(saved) == "table" then saved else {}
+		local expanded = {}
+		for id, value in if type(saved.expanded) == "table" then saved.expanded else {} do
+			if type(id) == "string" and value == true then expanded[id] = true end
+		end
+		return { selected = if type(saved.selected) == "string" then saved.selected else nil, expanded = expanded }
 	end,
 	enter = function(_, cx) controller.attach(cx) end,
-	save = function(state) return { selected = state.github.selected } end,
+	save = function(state) return { selected = state.github.selected, expanded = state.github.expanded } end,
 	view = view,
 	key = function(state, key, cx)
 		if key.ctrl or key.alt or key.meta then return false end
 		if key.name == "r" then controller.refresh(); return true end
-		local rows = entries(controller.get())
+		local rows = entries(controller.get(), state.github.expanded)
 		local index = reconcile(state.github, rows)
-		if #rows == 0 then return false end
-		if key.name == "enter" or key.name == "o" then open(rows[index], cx); return true
+		if not index then return false end
+		if key.name == "enter" then activate(state.github, rows[index], cx); return true
+		elseif key.name == "o" then open(rows[index], cx); return true
 		elseif key.name == "down" or key.name == "j" then index = math.min(#rows, index + 1)
 		elseif key.name == "up" or key.name == "k" then index = math.max(1, index - 1)
 		elseif key.name == "home" then index = 1
@@ -145,11 +198,13 @@ return {
 	end,
 	event = function(state, event, cx)
 		if event.ev == "action" and event.act == "github-refresh" then controller.refresh(); return end
-		if (event.ev == "select" or event.ev == "activate") and event.id == LIST then
-			for _, row in entries(controller.get()) do
-				if LIST .. "." .. row.id == event.item then
+		if (event.ev == "select" or event.ev == "activate") and event.id == LIST
+			and type(event.item) == "string" and string.sub(event.item, 1, #ITEM) == ITEM then
+			local id = string.sub(event.item, #ITEM + 1)
+			for _, row in entries(controller.get(), state.github.expanded) do
+				if row.id == id then
 					state.github.selected = row.id
-					if event.ev == "activate" then open(row, cx) end
+					if event.ev == "activate" then activate(state.github, row, cx) end
 					return
 				end
 			end

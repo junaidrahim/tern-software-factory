@@ -5,7 +5,7 @@
 # ///
 """Read-only host repository discovery; input and output are JSON over stdio."""
 from __future__ import annotations
-
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import json
 import os
@@ -19,8 +19,12 @@ import time
 
 SCAN_SECONDS = 110
 GIT_SECONDS = 10
+GIT_THREADS = 8
 MAX_REQUEST = 64 * 1024
-PRUNED = {".git", ".cache", "node_modules", ".venv", "venv", "target", "dist", "build", "__pycache__"}
+PRUNED = {
+    ".git", ".cache", "node_modules", ".venv", "venv", "target", "dist", "build", "__pycache__",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache",
+}
 GIT_METADATA = {"objects", "refs", "reftable", "logs", "hooks", "info", "branches", "worktrees"}
 
 
@@ -94,24 +98,26 @@ class Scanner:
             raise DiscoveryError(f"Cannot read repository {directory}: {detail or 'Git exited with status ' + str(result.returncode)}")
         return result.stdout
 
-    def repository(self, directory):
+    def locate(self, directory):
+        """Return Git's canonical common directory and whether `directory` is its main checkout."""
         common_output = self.command(directory, "rev-parse", "--path-format=absolute", "--git-common-dir")
         common = canonical(os.fsdecode(common_output.removesuffix(b"\n")))
-        main_checkout = None
+        main_checkout = False
         marker = os.path.join(directory, ".git")
         if os.path.isdir(marker):
-            if canonical(marker) == common:
-                main_checkout = directory
+            main_checkout = canonical(marker) == common
         elif os.path.isfile(marker):
             git_dir = self.command(directory, "rev-parse", "--absolute-git-dir")
-            if canonical(os.fsdecode(git_dir.removesuffix(b"\n"))) == common:
-                main_checkout = directory
+            main_checkout = canonical(os.fsdecode(git_dir.removesuffix(b"\n"))) == common
+        return common, main_checkout
+
+    def register(self, directory, common, main_checkout, listing):
         if common in self.repos:
             if main_checkout:
-                self.repos[common]["path"] = main_checkout
-                self.repos[common]["name"] = os.path.basename(main_checkout) or main_checkout
-            return common
-        output = self.command(directory, "worktree", "list", "--porcelain", "-z")
+                self.repos[common]["path"] = directory
+                self.repos[common]["name"] = os.path.basename(directory) or directory
+            return
+        output = listing.result() if listing else self.command(directory, "worktree", "list", "--porcelain", "-z")
         records = []
         for record in output.split(b"\0\0"):
             if not record:
@@ -141,7 +147,7 @@ class Scanner:
         # when the command runs inside a linked worktree outside the scan root.
         # A separate --git-dir has no backlink to its main checkout. Prefer the
         # checkout encountered on disk over the metadata path Git lists for it.
-        main = main_checkout or records[0]["path"]
+        main = directory if main_checkout else records[0]["path"]
         children = {record["path"]: record for record in records[1:] if record["path"] != main}
         self.repos[common] = {
             "path": main,
@@ -150,37 +156,71 @@ class Scanner:
             "detached": records[0]["detached"],
             "worktrees": sorted(children.values(), key=lambda row: alphabetical(row["path"])),
         }
-        return common
+
+    def attempt(self, method, *arguments):
+        """Run a Git step on a scan thread; failures become warnings, the deadline still aborts."""
+        try:
+            return method(*arguments), None
+        except ScanTimeout:
+            raise
+        except (DiscoveryError, OSError, ValueError, RuntimeError) as exc:
+            return None, str(exc)
 
     def scan(self, root):
-        pending = [root]
-        while pending:
-            self.remaining()
-            directory = pending.pop()
-            try:
-                with os.scandir(directory) as entries:
-                    names = set()
-                    children = []
-                    for entry in entries:
-                        self.remaining()
-                        names.add(entry.name)
-                        if entry.name not in PRUNED and entry.is_dir(follow_symlinks=False):
-                            children.append(entry.path)
-            except OSError as exc:
-                self.warnings.append(f"Cannot scan folder {directory}: {exc}")
-                continue
-            metadata_hint = {"HEAD", "objects"}.issubset(names)
-            metadata = False
-            if ".git" in names or metadata_hint:
+        # Git subprocesses run on threads while the walk continues, then merge
+        # in walk order so repositories and warnings never depend on thread
+        # scheduling. The deadline alarm interrupts the walk itself.
+        pool = ThreadPoolExecutor(max_workers=GIT_THREADS)
+        try:
+            visits = []
+            pending = [root]
+            while pending:
+                self.remaining()
+                directory = pending.pop()
                 try:
-                    metadata = self.repository(directory) == canonical(directory)
+                    with os.scandir(directory) as entries:
+                        names = set()
+                        children = []
+                        for entry in entries:
+                            names.add(entry.name)
+                            if entry.name not in PRUNED and entry.is_dir(follow_symlinks=False):
+                                children.append(entry.path)
+                except OSError as exc:
+                    visits.append((directory, None, f"Cannot scan folder {directory}: {exc}"))
+                    continue
+                metadata_hint = {"HEAD", "objects"}.issubset(names)
+                if ".git" in names or metadata_hint:
+                    location = pool.submit(self.attempt, self.locate, directory)
+                    visits.append((directory, location, None))
+                    # Only a folder holding HEAD and objects can be Git's common
+                    # directory itself; wait for Git only then, to prune metadata.
+                    if metadata_hint:
+                        found, _ = location.result()
+                        if found and found[0] == canonical(directory):
+                            children = [child for child in children if os.path.basename(child) not in GIT_METADATA]
+                pending.extend(sorted(children, key=alphabetical, reverse=True))
+            resolved = []
+            listings = {}
+            for directory, location, warning in visits:
+                if location:
+                    location, warning = location.result()
+                resolved.append((directory, location, warning))
+                # Prefetch one worktree listing per repository concurrently.
+                if location and location[0] not in listings:
+                    listings[location[0]] = directory, pool.submit(self.command, directory, "worktree", "list", "--porcelain", "-z")
+            for directory, location, warning in resolved:
+                if warning:
+                    self.warnings.append(warning)
+                    continue
+                first, listing = listings[location[0]]
+                try:
+                    self.register(directory, *location, listing if first == directory else None)
                 except ScanTimeout:
                     raise
                 except (DiscoveryError, OSError, ValueError, RuntimeError) as exc:
                     self.warnings.append(str(exc))
-            if metadata:
-                children = [child for child in children if os.path.basename(child) not in GIT_METADATA]
-            pending.extend(sorted(children, key=alphabetical, reverse=True))
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
         return sorted(self.repos.values(), key=lambda repo: (alphabetical(repo["name"]), alphabetical(repo["path"])))
 
 
@@ -223,7 +263,7 @@ def main():
             raise DiscoveryError("Repository request exceeds the size limit.")
         request = json.loads(data)
         result = execute(request)
-    except (DiscoveryError, ValueError, UnicodeError) as exc:
+    except (DiscoveryError, ValueError, UnicodeError, RecursionError) as exc:
         result = {"ok": False, "root": "", "repos": [], "error": f"Invalid repository request: {exc}"}
     print(json.dumps(result, ensure_ascii=True))
 

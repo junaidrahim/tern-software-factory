@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import calendar
+from concurrent.futures import Future, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -22,6 +23,7 @@ import socket
 import sqlite3
 import ssl
 import sys
+import threading
 import time
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
@@ -120,10 +122,11 @@ def normalize_url(value):
 
 @contextmanager
 def deadline(seconds):
-    """Bound DNS, socket reads and parsing, not merely individual socket operations.
+    """Bound parsing on the main thread, beyond individual socket operations.
 
-    The CLI and injected test calls execute on the main thread. Restoring an outer
-    alarm preserves the refresh budget when individual requests install a deadline.
+    SIGALRM only reaches the main thread; network fetches run on daemon threads
+    whose deadline is the refresh's bounded wait. Nested deadlines restore the
+    enclosing alarm with its remaining time.
     """
     previous_handler = signal.getsignal(signal.SIGALRM)
     previous_delay, previous_interval = signal.getitimer(signal.ITIMER_REAL)
@@ -170,6 +173,7 @@ class HTTPFetcher:
 
     Private networking is an explicit constructor-only test facility, never a JSON
     request option. No proxy environment, cookies, credentials, or automatic redirects.
+    Thread-safe: every socket operation times out; callers bound the whole request.
     """
     def __init__(self, *, allow_private=False, resolver=socket.getaddrinfo):
         self.allow_private = allow_private
@@ -191,52 +195,72 @@ class HTTPFetcher:
         return addresses
 
     def __call__(self, url, headers, max_bytes):
-        with deadline(FETCH_SECONDS):
-            current = normalize_url(url)
-            request_headers = dict(headers)
-            for redirect in range(4):
-                parts = urlsplit(current)
-                port = parts.port or (443 if parts.scheme == "https" else 80)
-                address = self.addresses(parts.hostname, port)[0]
-                if parts.scheme == "https":
-                    connection = PinnedHTTPSConnection(parts.hostname, address, port, 5)
-                else:
-                    connection = http.client.HTTPConnection(address, port, timeout=5)
-                try:
-                    connection.request("GET", urlunsplit(("", "", parts.path, parts.query, "")), headers={
-                        "Host": parts.netloc,
-                        "User-Agent": "Tern-News/1.0 (RSS reader)",
-                        "Accept": "application/atom+xml, application/rss+xml, application/xml, text/html, text/plain;q=0.8, */*;q=0.1",
-                        "Accept-Encoding": "identity",
-                        **request_headers,
-                    })
-                    response = connection.getresponse()
-                    response_headers = {key.lower(): value for key, value in response.getheaders()}
-                    if response.status in REDIRECTS:
-                        location = response_headers.get("location")
-                        if not location or redirect == 3:
-                            raise NewsError("Invalid or excessive publisher redirects")
-                        target = normalize_url(urljoin(current, location))
-                        if urlsplit(target).netloc != parts.netloc:
-                            request_headers = {}
-                        current = target
-                        continue
-                    if response.status == 304:
-                        return Response(304, b"", response_headers, current)
-                    if response.status != 200:
-                        raise NewsError(f"Publisher returned HTTP {response.status}")
-                    if response_headers.get("content-encoding", "identity").lower() not in {"", "identity"}:
-                        raise NewsError("Unsupported publisher content encoding")
-                    length = response_headers.get("content-length")
-                    if length and (not length.isdigit() or int(length) > max_bytes):
-                        raise NewsError("Publisher response exceeds size limit")
-                    body = response.read(max_bytes + 1)
-                    if len(body) > max_bytes:
-                        raise NewsError("Publisher response exceeds size limit")
-                    return Response(200, body, response_headers, current)
-                finally:
-                    connection.close()
+        current = normalize_url(url)
+        request_headers = dict(headers)
+        for redirect in range(4):
+            parts = urlsplit(current)
+            port = parts.port or (443 if parts.scheme == "https" else 80)
+            address = self.addresses(parts.hostname, port)[0]
+            if parts.scheme == "https":
+                connection = PinnedHTTPSConnection(parts.hostname, address, port, 5)
+            else:
+                connection = http.client.HTTPConnection(address, port, timeout=5)
+            response = None
+            try:
+                connection.request("GET", urlunsplit(("", "", parts.path, parts.query, "")), headers={
+                    "Host": parts.netloc,
+                    "User-Agent": "Tern-News/1.0 (RSS reader)",
+                    "Accept": "application/atom+xml, application/rss+xml, application/xml, text/html, text/plain;q=0.8, */*;q=0.1",
+                    "Accept-Encoding": "identity",
+                    **request_headers,
+                })
+                response = connection.getresponse()
+                response_headers = {key.lower(): value for key, value in response.getheaders()}
+                if response.status in REDIRECTS:
+                    location = response_headers.get("location")
+                    if not location or redirect == 3:
+                        raise NewsError("Invalid or excessive publisher redirects")
+                    target = normalize_url(urljoin(current, location))
+                    if urlsplit(target).netloc != parts.netloc:
+                        request_headers = {}
+                    current = target
+                    continue
+                if response.status == 304:
+                    return Response(304, b"", response_headers, current)
+                if response.status != 200:
+                    raise NewsError(f"Publisher returned HTTP {response.status}")
+                if response_headers.get("content-encoding", "identity").lower() not in {"", "identity"}:
+                    raise NewsError("Unsupported publisher content encoding")
+                length = response_headers.get("content-length")
+                if length and (not length.isdigit() or int(length) > max_bytes):
+                    raise NewsError("Publisher response exceeds size limit")
+                body = response.read(max_bytes + 1)
+                if len(body) > max_bytes:
+                    raise NewsError("Publisher response exceeds size limit")
+                return Response(200, body, response_headers, current)
+            finally:
+                # A Connection: close response owns the socket; failures retained
+                # in tracebacks must not keep it open until garbage collection.
+                if response is not None:
+                    response.close()
+                connection.close()
         raise NewsError("Unable to fetch publisher")
+
+
+def background(function, *args):
+    """Run network work on a daemon thread. A stalled request, including DNS,
+    which no socket timeout covers, is abandoned at its deadline and never
+    delays process exit."""
+    future = Future()
+
+    def run():
+        try:
+            future.set_result(function(*args))
+        except BaseException as error:
+            future.set_exception(error)
+
+    threading.Thread(target=run, daemon=True).start()
+    return future
 
 
 def source_config(sources):
@@ -429,15 +453,17 @@ class Worker:
                 ON CONFLICT(story_id,source_id) DO UPDATE SET guid=excluded.guid,published_at=excluded.published_at""",
                 (story["id"], source["id"], text(entry.get("id") or entry.get("guid"), 1024) or None, timestamp))
 
-    def ingest_arxiv_weekly(self, source, now):
-        """Replace memberships only after every page of the edition is fetched."""
-        entries = _arxiv.fetch_week(self.fetch, source["url"], now, MAX_FEED_BYTES)
-        self.db.execute("DELETE FROM story_sources WHERE source_id=?", (source["id"],))
-        self.ingest_entries(entries, source["url"], source, now)
+    def download(self, source, headers, now):
+        """Network and parsing only: no SQLite access, so it can run off the main thread."""
+        if source["kind"] == "hn_weekly":
+            return self.fetch_hn_weekly(source["url"], now)
+        if source["kind"] == "arxiv_weekly":
+            return _arxiv.fetch_week(self.fetch, source["url"], now, MAX_FEED_BYTES)
+        return self.fetch(source["url"], headers, MAX_FEED_BYTES)
 
-    def ingest_hn_weekly(self, source, now):
+    def fetch_hn_weekly(self, url, now):
         """Fetch a complete edition before changing any cached memberships."""
-        endpoint = urlsplit(source["url"])
+        endpoint = urlsplit(url)
         entries = {}
         page = 0
         while True:
@@ -492,7 +518,9 @@ class Worker:
             page += 1
             if len(entries) >= HN_STORIES or page >= pages:
                 break
-        ranked = sorted(entries.values())[:HN_STORIES]
+        return sorted(entries.values())[:HN_STORIES]
+
+    def store_hn_weekly(self, ranked, source, now):
         self.db.execute("DELETE FROM story_sources WHERE source_id=?", (source["id"],))
         for rank, (_, url, title, published, identifier) in enumerate(ranked, 1):
             self.db.execute("""INSERT INTO stories(url,title,published_at,first_seen_at)
@@ -502,7 +530,10 @@ class Worker:
                 VALUES(?,?,?,?,?)""", (story["id"], source["id"], identifier, rank, published))
 
     def refresh(self, force=False):
+        # Due sources download concurrently (at most MAX_SOURCES threads, one per
+        # source); SQLite writes stay on this thread in configuration order.
         started = time.monotonic()
+        jobs = []
         for source in self.sources:
             if not source["enabled"]:
                 continue
@@ -510,35 +541,39 @@ class Worker:
             now = self.clock()
             if not force and row["next_refresh"] and row["next_refresh"] > now:
                 continue
-            remaining = REFRESH_SECONDS - (time.monotonic() - started)
-            if remaining <= 0:
-                break
+            headers = {}
+            if row["etag"]:
+                headers["If-None-Match"] = row["etag"]
+            if row["modified"]:
+                headers["If-Modified-Since"] = row["modified"]
+            # Weekly editions paginate; ordinary feeds are one request.
+            budget = REFRESH_SECONDS if source["kind"] in ("hn_weekly", "arxiv_weekly") else FETCH_SECONDS
+            jobs.append((source, row, now, started + budget, background(self.download, source, headers, now)))
+        for source, row, now, expires, job in jobs:
             try:
-                headers = {}
-                if row["etag"]:
-                    headers["If-None-Match"] = row["etag"]
-                if row["modified"]:
-                    headers["If-Modified-Since"] = row["modified"]
-                with deadline(remaining):
-                    if source["kind"] == "hn_weekly":
-                        self.ingest_hn_weekly(source, now)
-                        etag = modified = None
-                    elif source["kind"] == "arxiv_weekly":
-                        self.ingest_arxiv_weekly(source, now)
-                        etag = modified = None
-                    else:
-                        response = self.fetch(source["url"], headers, MAX_FEED_BYTES)
-                        if response.status == 304 and row["last_success"] is None:
-                            raise NewsError("Publisher returned not-modified without a cached feed")
-                        if response.status == 200:
-                            self.ingest(response, source, now)
-                        elif response.status != 304:
-                            raise NewsError(f"Publisher returned HTTP {response.status}")
-                        etag = text(response.headers.get("etag"), 1024) or (row["etag"] if response.status == 304 else None)
-                        modified = text(response.headers.get("last-modified"), 1024) or (row["modified"] if response.status == 304 else None)
-                    self.db.execute("""UPDATE feeds SET last_success=?,next_refresh=?,error=NULL,etag=?,modified=? WHERE id=?""",
-                                    (now, now + source["interval"], etag, modified, source["id"]))
-                    self.db.commit()
+                if not wait([job], max(0, expires - time.monotonic())).done:
+                    raise NewsError("Operation timed out")
+                result = job.result()
+                if source["kind"] == "hn_weekly":
+                    self.store_hn_weekly(result, source, now)
+                    etag = modified = None
+                elif source["kind"] == "arxiv_weekly":
+                    # Replace memberships only after every page of the edition arrived.
+                    self.db.execute("DELETE FROM story_sources WHERE source_id=?", (source["id"],))
+                    self.ingest_entries(result, source["url"], source, now)
+                    etag = modified = None
+                else:
+                    if result.status == 304 and row["last_success"] is None:
+                        raise NewsError("Publisher returned not-modified without a cached feed")
+                    if result.status == 200:
+                        self.ingest(result, source, now)
+                    elif result.status != 304:
+                        raise NewsError(f"Publisher returned HTTP {result.status}")
+                    etag = text(result.headers.get("etag"), 1024) or (row["etag"] if result.status == 304 else None)
+                    modified = text(result.headers.get("last-modified"), 1024) or (row["modified"] if result.status == 304 else None)
+                self.db.execute("""UPDATE feeds SET last_success=?,next_refresh=?,error=NULL,etag=?,modified=? WHERE id=?""",
+                                (now, now + source["interval"], etag, modified, source["id"]))
+                self.db.commit()
             except Exception as error:
                 self.db.rollback()
                 self.db.execute("UPDATE feeds SET error=?,next_refresh=? WHERE id=?",

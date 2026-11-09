@@ -27,7 +27,8 @@ local function read(cx, agent, finished)
 	-- Work backwards to the most recent assistant text.
 	for i = #messages, 1, -1 do
 		local message = messages[i]
-		if message.role == "assistant" and result.response == "" then result.response = text(message.text, 6000) end
+		if message.role == "assistant" then result.response = text(message.text, 6000) end
+		if result.response ~= "" then break end
 	end
 	-- Native non-omp agents may only provide a pane update. Do not label that
 	-- fallback as a structured assistant response, or include it over omp data.

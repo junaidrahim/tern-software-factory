@@ -15,10 +15,32 @@ local function plain(value)
 		:gsub("[%c]", " "))
 end
 
-local function source_names(story)
+-- Display text is derived once per source name and per snapshot story record;
+-- records are replaced, never mutated, so weak keys drop superseded editions.
+local plain_names = {}
+local display = setmetatable({}, { __mode = "k" })
+
+local function source_names(list)
 	local names = {}
-	for _, source in story.sources do table.insert(names, plain(source.name)) end
+	for _, source in list do
+		local name = plain_names[source.name]
+		if not name then
+			name = plain(source.name)
+			plain_names[source.name] = name
+		end
+		table.insert(names, name)
+	end
 	return table.concat(names, ", ")
+end
+
+local function cached(story)
+	local entry = display[story]
+	if not entry then
+		local names = source_names(story.sources)
+		entry = { title = plain(story.title), names = names, search = (story.title .. " " .. names):lower() }
+		display[story] = entry
+	end
+	return entry
 end
 
 local function age(now, at)
@@ -114,10 +136,11 @@ local function sync(news, data)
 	end
 end
 
-local function visible(news)
-	local rows = {}
+-- Returns matching snapshot records plus each row's eligible source names.
+-- Shared records are never copied or mutated, even when memberships expire.
+local function visible(news, clock)
+	local rows, labels = {}, {}
 	local query = news.query:lower():match("^%s*(.-)%s*$")
-	local clock = now(controller.get())
 	local cutoff = clock - 7 * 86400
 	local windows = {}
 	for _, source in sources do
@@ -127,28 +150,33 @@ local function visible(news)
 	local members = groups[news.source] or {}
 	for _, id in (if news.source == "hn" then news.hn_order else news.order) do
 		local story = news.records[id]
-		local matches_source, eligible = false, {}
-		for _, source in story.sources do
+		local matches_source, eligible = false, nil
+		for index, source in story.sources do
 			local window = windows[source.id]
 			local published = source.published_at
 			if not window or (type(published) == "number" and published >= clock - window and published <= clock) then
-				table.insert(eligible, source)
+				if eligible then table.insert(eligible, source) end
 				if members[source.id] and (news.source ~= "hn" or not published or published >= cutoff) then
 					matches_source = true
 				end
+			elseif not eligible then
+				eligible = table.move(story.sources, 1, index - 1, 1, {})
 			end
 		end
-		local visible_story = story
-		if #eligible ~= #story.sources then
-			visible_story = table.clone(story)
-			visible_story.sources = eligible
-		end
-		if matches_source
-			and (query == "" or (story.title .. " " .. source_names(visible_story)):lower():find(query, 1, true)) then
-			table.insert(rows, visible_story)
+		if matches_source then
+			local entry = cached(story)
+			local names, search = entry.names, entry.search
+			if eligible then
+				names = source_names(eligible)
+				search = (story.title .. " " .. names):lower()
+			end
+			if query == "" or search:find(query, 1, true) then
+				table.insert(rows, story)
+				table.insert(labels, names)
+			end
 		end
 	end
-	return rows
+	return rows, labels
 end
 
 local function selected_index(news, rows)
@@ -228,16 +256,17 @@ end
 local function view(state)
 	local news, data = state.news, controller.get()
 	sync(news, data)
-	local stories = visible(news)
+	local clock = now(data)
+	local stories, labels = visible(news, clock)
 	reconcile(news, stories)
 	local rows = {}
-	for _, story in stories do
-		local names = source_names(story)
+	for index, story in stories do
+		local names = labels[index]
 		local weekly = if news.source == "hn" then hn_source(story) else nil
 		local published = if weekly and weekly.published_at then weekly.published_at else story.published_at
 		table.insert(rows, ui.node("item", {
 			key = "s" .. story.id,
-			label = { ui.span(age(now(data), published), "muted"), ui.span(names, "muted"), ui.span(plain(story.title), "strong") },
+			label = { ui.span(age(clock, published), "muted"), ui.span(names, "muted"), ui.span(cached(story).title, "strong") },
 			title = story.title .. "\n" .. names,
 			aria = story.title .. ", " .. names,
 		}))
@@ -283,7 +312,7 @@ local function key(state, key, cx)
 		for i, tab in tabs do if tab.id == news.source then news.source = tabs[i % #tabs + 1].id; break end end
 		return true
 	elseif key.name == "escape" and news.query ~= "" then news.query, news.cursor, news.anchor = "", 0, nil; return true end
-	local rows = visible(news)
+	local rows = visible(news, now(data))
 	reconcile(news, rows)
 	if #rows == 0 then return false end
 	local index = selected_index(news, rows)
@@ -307,9 +336,12 @@ local function event(state, event, cx)
 		local _, groups = source_tabs()
 		if groups[event.item] then news.source = event.item end
 		focus(news, cx, false)
-	elseif (event.ev == "select" or event.ev == "activate") and event.id == LIST then
-		for _, story in visible(news) do
-			if item_id(story.id) == event.item then
+	elseif (event.ev == "select" or event.ev == "activate") and event.id == LIST and type(event.item) == "string" then
+		-- Parse the row id once instead of building every row's item id.
+		local id = event.item:sub(#item_id("") + 1)
+		if event.item ~= item_id(id) then return end
+		for _, story in visible(news, now(data)) do
+			if story.id == id then
 				news.selected = story.id
 				focus(news, cx, false)
 				if event.ev == "activate" then open_original(news, cx) end

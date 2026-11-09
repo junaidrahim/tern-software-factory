@@ -87,6 +87,14 @@ pump = function()
 	notify()
 end
 
+local function tick()
+	if not started or next(subscribers) == nil then return end
+	if tern.now() >= next_refresh then
+		next_refresh = tern.now() + refresh_ms
+		enqueue({ action = "refresh" })
+	end
+end
+
 local function attach(cx)
 	subscribers[cx.pane] = cx
 	if not started then
@@ -95,20 +103,19 @@ local function attach(cx)
 		enqueue({ action = "snapshot" })
 		enqueue({ action = "refresh" })
 	else
+		tick()
 		pump()
 	end
 end
 
 local function detach(pane)
 	subscribers[pane] = nil
-	if next(subscribers) == nil then queue = {} end
-end
-
-local function tick()
-	if not started or next(subscribers) == nil then return end
-	if tern.now() >= next_refresh then
-		next_refresh = tern.now() + refresh_ms
-		enqueue({ action = "refresh" })
+	if next(subscribers) == nil then
+		-- A refresh dropped with the queue stays due for the next subscriber.
+		for _, job in queue do
+			if job.action == "refresh" then next_refresh = 0 end
+		end
+		queue = {}
 	end
 end
 

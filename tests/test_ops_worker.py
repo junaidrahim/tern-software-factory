@@ -59,8 +59,10 @@ class OpsWorkerTests(unittest.TestCase):
         }])
         self.assertEqual(snapshot["summary"], {"measured_models": 1, "effective_samples": 2.5, "command_uses": 0})
         # Halving the weighted accumulators preserves all performance estimates.
-        with sqlite3.connect(self.path) as connection:
+        connection = sqlite3.connect(self.path)
+        with connection:
             connection.execute("UPDATE model_perf SET samples=samples/2, output_tokens=output_tokens/2, gen_ms=gen_ms/2, ttft_samples=ttft_samples/2, ttft_ms=ttft_ms/2")
+        connection.close()
         halved = self.snapshot()["models"][0]
         for field in ("tokens_per_second", "ttft_ms", "avg_output_tokens"):
             self.assertEqual(halved[field], snapshot["models"][0][field])
@@ -140,9 +142,11 @@ class OpsWorkerTests(unittest.TestCase):
 
     def test_read_only_database_and_private_tables_unchanged(self):
         self.database(models=[("m", 1, 1, 1, 1, 1, 10)])
-        with sqlite3.connect(self.path) as connection:
+        connection = sqlite3.connect(self.path)
+        with connection:
             connection.execute("CREATE TABLE private_records(secret TEXT)")
             connection.execute("INSERT INTO private_records VALUES ('DO-NOT-DISCLOSE')")
+        connection.close()
         before = self.path.read_bytes()
         self.path.chmod(0o444)
         result = self.snapshot()
@@ -282,7 +286,7 @@ class OpsWorkerTests(unittest.TestCase):
         self.assertFalse((self.base / ".omp").exists())
 
     def test_stdio_rejects_invalid_or_oversized_requests(self):
-        for payload in (b"{", b"[]", b'{"action":"write"}', b"x" * (worker.MAX_REQUEST + 1)):
+        for payload in (b"{", b"[]", b'{"action":"write"}', b"[" * worker.MAX_REQUEST, b"x" * (worker.MAX_REQUEST + 1)):
             with self.subTest(payload=payload[:40]):
                 self.assertFalse(self.run_worker(payload)["ok"])
         self.assertFalse((self.base / ".omp").exists())

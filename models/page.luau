@@ -42,23 +42,47 @@ local function button(key, label, action)
 	return ui.node("el", { key = key, tag = "button", role = "factory-models-button", actions = { click = action } }, { ui.text(label) })
 end
 
-local function visible(models, snapshot)
-	local rows, ranks = {}, {}
-	local query = models.query:lower():match("^%s*(.-)%s*$")
-	for index, model in snapshot.models do
-		if query == "" or (plain(model.name) .. " " .. plain(model.creator) .. " " .. plain(model.slug)):lower():find(query, 1, true) then
-			table.insert(rows, model)
-			ranks[model.id] = index
-		end
+-- Search text and cell strings are derived once per worker snapshot, and each
+-- pane reuses its filtered, sorted rows until its snapshot, query, or sort changes.
+local prepared = setmetatable({}, { __mode = "k" })
+local memo = setmetatable({}, { __mode = "k" })
+
+local function prepare(list)
+	local entries = prepared[list]
+	if entries then return entries end
+	entries = {}
+	for index, model in list do
+		local name, creator = plain(model.name), plain(model.creator)
+		entries[model] = {
+			rank = index, name = name, creator = creator,
+			search = (name .. " " .. creator .. " " .. plain(model.slug)):lower(),
+			cells = { metric(model.intelligence), metric(model.coding), metric(model.agentic), metric(model.speed),
+				metric(model.input_price, true), metric(model.output_price, true) },
+		}
 	end
-	local ascending = models.sort == "input_price" or models.sort == "output_price"
+	prepared[list] = entries
+	return entries
+end
+
+local function visible(models, snapshot)
+	local list, sort = snapshot.models, models.sort
+	local cached = memo[models]
+	if cached and cached.list == list and cached.query == models.query and cached.sort == sort then return cached.rows end
+	local entries = prepare(list)
+	local rows = {}
+	local query = models.query:lower():match("^%s*(.-)%s*$")
+	for _, model in list do
+		if query == "" or entries[model].search:find(query, 1, true) then table.insert(rows, model) end
+	end
+	local ascending = sort == "input_price" or sort == "output_price"
 	table.sort(rows, function(a, b)
-		local av, bv = a[models.sort], b[models.sort]
+		local av, bv = a[sort], b[sort]
 		local an, bn = numeric(av), numeric(bv)
 		if an ~= bn then return an end
 		if an and av ~= bv then return if ascending then av < bv else av > bv end
-		return ranks[a.id] < ranks[b.id]
+		return entries[a].rank < entries[b].rank
 	end)
+	memo[models] = { list = list, query = models.query, sort = sort, rows = rows }
 	return rows
 end
 
@@ -216,25 +240,29 @@ local function view(state)
 	local snapshot = data.snapshot
 	local records = visible(models, snapshot)
 	reconcile(models, records, snapshot)
+	local entries = prepare(snapshot.models)
 	local rows = {}
 	for _, model in records do
+		local entry = entries[model]
+		local label = { ui.span(entry.name, "strong") }
+		for _, cell in entry.cells do table.insert(label, ui.span(cell, "muted")) end
 		table.insert(rows, ui.node("item", {
 			key = "m" .. model.id,
-			label = { ui.span(plain(model.name), "strong"), ui.span(metric(model.intelligence), "muted"),
-				ui.span(metric(model.coding), "muted"), ui.span(metric(model.agentic), "muted"),
-				ui.span(metric(model.speed), "muted"), ui.span(metric(model.input_price, true), "muted"), ui.span(metric(model.output_price, true), "muted") },
-			title = plain(model.name) .. "\nCreator: " .. plain(model.creator),
-			aria = plain(model.name) .. ", " .. plain(model.creator),
+			label = label,
+			title = entry.name .. "\nCreator: " .. entry.creator,
+			aria = entry.name .. ", " .. entry.creator,
 		}))
 	end
-	local empty = if data.loading then "Loading models…"
+	-- Cached rows stay visible during loads and setup errors, so an empty list
+	-- with a non-empty snapshot can only mean the search matched nothing.
+	local empty = if #snapshot.models > 0 then "No models match this search."
+		elseif data.loading then "Loading models…"
 		elseif data.setup then "No model data yet. Configure your free Artificial Analysis API key, then Refresh."
-		elseif #snapshot.models == 0 then "No model data available. Refresh to fetch Artificial Analysis benchmarks."
-		else "No models match this search."
+		else "No model data available. Refresh to fetch Artificial Analysis benchmarks."
 	local children = {
 		ui.node("row", { key = "heading", role = "factory-models-actions" }, {
 			ui.text({ ui.span("Models", "strong") }), ui.badge(tostring(#records) .. " models", "muted"),
-			button("refresh", if data.loading then "Refreshing…" else "Refresh", "models-refresh"),
+			button("refresh", if data.refreshing then "Refreshing…" else "Refresh", "models-refresh"),
 			ui.node("el", { key = "credentials", tag = "button", role = "factory-models-button",
 				title = "Artificial Analysis API key", aria = "Artificial Analysis API key",
 				actions = { click = "models-key-open" } }, { ui.node("icon", { name = "key" }) }),

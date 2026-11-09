@@ -66,7 +66,7 @@ def read_history(root):
     def read_session(stream, nested):
         header = False
         for line in stream:
-            if not line.strip():
+            if line.isspace():
                 continue
             try:
                 entry = json.loads(line)

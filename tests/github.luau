@@ -87,7 +87,15 @@ assert(#jobs == 1, "Canonical worker root must not invalidate the configured ~/ 
 assert(role(page.view(state).main, "factory-github-actions").c[3].p.actions.click == "github-refresh")
 assert(renders[1] > 0 and renders[2] > 0)
 local tree = role(page.view(state).main, "factory-github-tree")
-assert(#tree.c == 4 and tree.p.max == 1)
+assert(#tree.c == 2 and tree.p.max == 1, "Repositories start collapsed")
+assert(tree.c[1].p.label[1].t == "▸ owner/alpha" and tree.c[2].p.label[1].t == "◦ owner/empty")
+assert(tree.c[1].p.label[2].t == "2 open PRs")
+page.key(state, { name = "o" }, one)
+assert(opened[#opened] == "https://github.com/owner/alpha", "o opens a repository without expanding it")
+assert(#role(page.view(state).main, "factory-github-tree").c == 2)
+page.key(state, { name = "enter" }, one)
+tree = role(page.view(state).main, "factory-github-tree")
+assert(#tree.c == 4 and tree.c[1].p.label[1].t == "▾ owner/alpha", "Enter expands a repository")
 assert(tree.c[1].p.role == "factory-github-repository" and tree.c[2].p.role == "factory-github-pr")
 assert(tree.c[3].p.role == "factory-github-pr" and tree.c[4].p.role == "factory-github-repository")
 assert(tree.c[2].p.label[1].t == "↳ #12" and tree.c[2].p.label[2].t == "Improve parser")
@@ -95,8 +103,10 @@ assert(tree.c[2].p.label[3].t:find("@alice · Draft · feature/parser → main",
 assert(tree.c[4].p.label[2].t == "No open PRs")
 assert(tree.c[2].p.title:find("2026-10-19T12:00:00Z", 1, true))
 assert(tree.p.selected == "main.github.tree." .. tree.c[1].p.key)
+page.key(state, { name = "end" }, one)
 page.key(state, { name = "enter" }, one)
-assert(opened[#opened] == "https://github.com/owner/alpha")
+assert(#role(page.view(state).main, "factory-github-tree").c == 4, "A repository without PRs does not fold")
+page.key(state, { name = "home" }, one)
 page.key(state, { name = "j" }, one)
 page.key(state, { name = "o" }, one)
 assert(opened[#opened] == "https://github.com/owner/alpha/pull/12")
@@ -117,10 +127,14 @@ page.event(state, { ev = "activate", id = "main.github.tree", item = "main.githu
 assert(opened[#opened] == "https://github.com/owner/alpha/pull/4")
 local saved = page.save(state)
 assert(saved.selected == state.github.selected and saved.root == nil and saved.repos == nil)
-assert(page.init(saved).selected == saved.selected)
-local independent = { github = page.init() }
-page.view(independent)
-assert(independent.github.selected ~= state.github.selected, "Panes share records but keep independent selection")
+assert(page.init(saved).selected == saved.selected and page.init(saved).expanded[tree.c[1].p.key], "Expanded repositories persist")
+local independent = { github = page.init({ selected = tree.c[3].p.key }) }
+assert(#role(page.view(independent).main, "factory-github-tree").c == 2, "Panes keep independent folding")
+assert(independent.github.selected == tree.c[1].p.key, "A PR hidden by folding selects its repository")
+page.event(independent, { ev = "activate", id = "main.github.tree", item = "main.github.tree." .. tree.c[1].p.key }, one)
+assert(#role(page.view(independent).main, "factory-github-tree").c == 4, "Double-click expands a repository")
+page.event(independent, { ev = "activate", id = "main.github.tree", item = "main.github.tree." .. tree.c[1].p.key }, one)
+assert(#role(page.view(independent).main, "factory-github-tree").c == 2, "Double-click collapses it again")
 
 page.event(state, { ev = "action", act = "github-refresh" }, one)
 local partial = fixture()
@@ -153,6 +167,8 @@ assert(#jobs == 6 and jobs[6].request.root == "/different root/项目")
 assert(#controller.get().repos == 0 and controller.get().loading, "Stale completion cannot resurrect the previous root")
 finish(6, answer({}, "/different root/项目"))
 assert(controller.get().loaded and #controller.get().repos == 0)
+page.view(state)
+assert(next(state.github.expanded) == nil, "A completed load forgets folds of repositories it no longer lists")
 controller.refresh()
 store["repositories:root"] = ""
 controller.refresh()
@@ -167,10 +183,11 @@ unsafe[1].url = "https://github.com.evil.test/owner/alpha"
 unsafe[1].prs[1].url = "javascript:alert(1)"
 finish(8, answer(unsafe, "/code"))
 page.key(state, { name = "home" }, one)
+page.key(state, { name = "enter" }, one)
 before_open = #opened
-page.key(state, { name = "enter" }, one)
+page.key(state, { name = "o" }, one)
 page.key(state, { name = "down" }, one)
-page.key(state, { name = "enter" }, one)
+page.key(state, { name = "o" }, one)
 assert(#opened == before_open, "Neither repository nor PR actions open untrusted URLs")
 controller.refresh()
 controller.detach(1)
@@ -212,4 +229,67 @@ local unreadable = make_controller()
 job_count = #jobs
 unreadable.attach(one)
 assert(#jobs == job_count and unreadable.get().error:find("saved repository root", 1, true))
+
+fail_root = false
+store["repositories:root"] = "/code"
+local paged = make_controller()
+local paged_page = (function()
+	local require = function() return paged end
+-- GITHUB_PAGE_SOURCE
+end)()
+local function paged_fixture()
+	local repos = fixture()
+	repos[1].total, repos[1].cursor = 30, "c1"
+	return repos
+end
+local paged_state = { github = paged_page.init({ selected = "rowner_2fempty" }) }
+paged.attach(one)
+paged_page.view(paged_state)
+assert(paged_state.github.selected == "rowner_2fempty", "Rendering before data arrives keeps the saved selection")
+local first = #jobs
+finish(first, answer(paged_fixture(), "/code"))
+paged_page.view(paged_state)
+assert(paged_state.github.selected == "rowner_2fempty", "The saved selection is restored once rows load")
+paged_page.key(paged_state, { name = "home" }, one)
+paged_page.key(paged_state, { name = "enter" }, one)
+local function paged_tree() return role(paged_page.view(paged_state).main, "factory-github-tree") end
+tree = paged_tree()
+assert(#tree.c == 5 and tree.c[4].p.role == "factory-github-more", "A repository with more pages ends in a load-more row")
+assert(tree.c[1].p.label[2].t == "30 open PRs" and tree.c[4].p.label[2].t == "2 of 30 shown")
+assert(role(paged_page.view(paged_state).main, "factory-github-actions").c[2].p.text == "2 repositories · 30 PRs")
+local more_item = "main.github.tree." .. tree.c[4].p.key
+before_open = #opened
+paged_page.event(paged_state, { ev = "activate", id = "main.github.tree", item = more_item }, one)
+paged_page.event(paged_state, { ev = "activate", id = "main.github.tree", item = more_item }, one)
+assert(#jobs == first + 1 and #opened == before_open, "Load more starts one page request and opens nothing")
+assert(jobs[first + 1].request.repo == "owner/alpha" and jobs[first + 1].request.after == "c1" and jobs[first + 1].request.root == nil)
+assert(paged_tree().c[4].p.label[1].t == "↳ Loading more…")
+local next_pr = table.clone(fixture()[1].prs[2])
+next_pr.number, next_pr.url = 7, "https://github.com/owner/alpha/pull/7"
+finish(first + 1, { ok = true, repo = "owner/alpha", prs = { table.clone(fixture()[1].prs[2]), next_pr }, total = 31, cursor = "c2" })
+local alpha = paged.get().repos[1]
+assert(#alpha.prs == 3 and alpha.prs[3].number == 7 and alpha.cursor == "c2" and alpha.total == 31, "Pages append without duplicates")
+paged_page.key(paged_state, { name = "end" }, one)
+paged_page.key(paged_state, { name = "k" }, one)
+paged_page.key(paged_state, { name = "enter" }, one)
+assert(#jobs == first + 2 and jobs[first + 2].request.after == "c2", "Enter on the load-more row requests the next cursor")
+before_open = #opened
+paged_page.key(paged_state, { name = "o" }, one)
+assert(#jobs == first + 2 and opened[#opened] == "https://github.com/owner/alpha" and #opened == before_open + 1,
+	"o on a load-more row opens the repository instead of paging")
+paged.refresh()
+assert(#jobs == first + 3 and jobs[first + 3].request.root == "/code", "Refresh is not blocked by a page request")
+finish(first + 3, answer(fixture(), "/code"))
+finish(first + 2, { ok = true, repo = "owner/alpha", prs = { next_pr }, total = 31 })
+assert(#paged.get().repos[1].prs == 2 and paged.get().repos[1].cursor == nil, "A refresh discards in-flight page answers")
+assert(#paged_tree().c == 4)
+paged.refresh()
+finish(first + 4, answer(paged_fixture(), "/code"))
+paged.more("owner/alpha")
+jobs[first + 5].done({ status = 1, stderr = "private process diagnostic" })
+alpha = paged.get().repos[1]
+assert(#alpha.prs == 2 and alpha.cursor == "c1" and alpha.page_error and not alpha.page_error:find("private", 1, true))
+assert(paged_tree().c[4].p.tone == "error", "A failed page keeps loaded PRs and offers retry")
+paged.more("owner/alpha")
+assert(#jobs == first + 6 and alpha.page_error == nil, "Retry clears the page error")
 print("github: controller lifecycle, root generations, retained data, safe actions, and nested rows passed")

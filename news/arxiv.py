@@ -7,8 +7,6 @@ import time
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from xml.etree import ElementTree
 
-import feedparser
-
 
 _ATOM = "{http://www.w3.org/2005/Atom}"
 _OPEN_SEARCH = "{http://a9.com/-/spec/opensearch/1.1/}"
@@ -49,8 +47,8 @@ def _page(response, max_bytes):
     body = getattr(response, "body", None)
     if not isinstance(body, bytes) or not body or len(body) > max_bytes:
         raise ValueError("arXiv response has invalid or excessive size")
-    # Match the worker's XML guard, including UTF-16/32 declarations. Neither
-    # parser receives a URL, so the injected safe fetcher is the only network path.
+    # Match the worker's XML guard, including UTF-16/32 declarations. The parser
+    # never receives a URL, so the injected safe fetcher is the only network path.
     if re.search(br"<!\s*(?:DOCTYPE|ENTITY)\b", body.replace(b"\x00", b""), re.IGNORECASE):
         raise ValueError("arXiv feed contains unsupported XML declarations")
     try:
@@ -64,10 +62,7 @@ def _page(response, max_bytes):
         identifier = _text(node, _ATOM + "id")
         if re.match(r"https?://(?:export\.)?arxiv\.org/api/errors(?:[#/?]|$)", identifier):
             raise ValueError("arXiv API error: " + _text(node, _ATOM + "title"))
-    parsed = feedparser.parse(body)
-    if parsed.get("bozo") or parsed.get("version") != "atom10" or len(parsed.entries) != len(nodes):
-        raise ValueError("arXiv returned invalid or incomplete Atom data")
-    return root, nodes, parsed.entries
+    return root, nodes
 
 
 def fetch_week(fetch, url, now, max_bytes):
@@ -95,7 +90,7 @@ def fetch_week(fetch, url, now, max_bytes):
         if start:
             time.sleep(3)
         response = fetch(page_url, {"Accept": "application/atom+xml"}, max_bytes)
-        root, nodes, parsed_entries = _page(response, max_bytes)
+        root, nodes = _page(response, max_bytes)
         page_total = _count(root, "totalResults")
         if page_total > _MAX_RESULTS:
             raise ValueError("arXiv weekly query exceeds the 30000-result API ceiling")
@@ -106,7 +101,7 @@ def fetch_week(fetch, url, now, max_bytes):
         expected = min(_PAGE_SIZE, total - start)
         if len(nodes) != expected:
             raise ValueError("arXiv returned an incomplete result page")
-        for node, entry in zip(nodes, parsed_entries):
+        for node in nodes:
             identifier = _text(node, _ATOM + "id")
             parts = urlsplit(identifier)
             match = _PAPER_ID.fullmatch(parts.path.removeprefix("/abs/"))
@@ -126,8 +121,9 @@ def fetch_week(fetch, url, now, max_bytes):
                 stamp = datetime.fromisoformat(published.replace("Z", "+00:00")).timestamp()
             except (ValueError, OverflowError, OSError) as error:
                 raise ValueError("arXiv entry has an invalid first-submission timestamp") from error
-            title = entry.get("title")
-            if not isinstance(title, str) or not title.strip():
+            # Plain-text Atom titles: ElementTree already decoded entities.
+            title = " ".join(_text(node, _ATOM + "title").split())
+            if not title:
                 raise ValueError("arXiv entry has an invalid title")
             categories = node.findall(_ATOM + "category")
             if not categories or any(not category.get("term") for category in categories):
@@ -137,7 +133,7 @@ def fetch_week(fetch, url, now, max_bytes):
             if not cutoff <= stamp <= now:
                 continue
             canonical = "https://arxiv.org/abs/" + paper
-            entries.append({"id": canonical, "link": canonical, "title": " ".join(title.split()),
+            entries.append({"id": canonical, "link": canonical, "title": title,
                             "published_parsed": time.gmtime(stamp)})
         start += len(nodes)
         if start == total:

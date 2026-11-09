@@ -252,3 +252,20 @@ page.event(state, { ev = "select", id = "main.news.sources", item = "anthropic" 
 assert(#headlines() == 0, "Expired constituent feeds also leave the grouped tab")
 assert(shared.sources[1].name == "Anthropic Engineering", "View filtering never mutates the shared cached edition")
 print("PASS: weekly feeds expire in cached editions without hiding eligible attribution")
+
+-- Closing during the first cache read must not lose the initial refresh.
+local reopened = (function()
+local require = function() return sources end
+-- NEWS_CONTROLLER_SOURCE
+end)()
+controller.detach(1)
+local first = #jobs
+reopened.attach(one)
+assert(#jobs == first + 1 and jobs[first + 1].request.action == "snapshot")
+reopened.detach(1)
+complete(first + 1, {})
+assert(#jobs == first + 1, "No subscribers means no worker")
+reopened.attach(one)
+assert(#jobs == first + 2 and jobs[first + 2].request.action == "refresh",
+	"Reopening runs the refresh dropped while the block was closed")
+print("PASS: News refresh survives closing during the initial cache read")

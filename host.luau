@@ -186,7 +186,7 @@ local function refresh_projects(state, cx)
 					then string.gsub(result.stdout, "[\r\n]+$", "") else ""
 				repo.name = root:match("([^/]+)/*$")
 				repo.running = false
-				cx:render()
+				pcall(function() cx:render() end)
 			end)
 		end)
 		if not ok then repo.name, repo.running = nil, false end
@@ -274,12 +274,18 @@ local function shift(data)
 end
 
 -- Ages shown in the view, refreshed each poll: an entry is written only when it changes.
-local function age(state)
-	local now = tern.now()
-	local function seconds(at) return if at then math.max(0, math.floor((now - at) / 1000)) else nil end
-	for _, agent in state.agents do agent.finished_seconds = seconds(agent.finished_here) end
+-- True when an age the Agents page shows reads differently.
+local function advance_ages(state)
+	local now, moved = tern.now(), false
+	local function seconds(at, before)
+		local value = if at then math.max(0, math.floor((now - at) / 1000)) else nil
+		if value ~= before and (value == nil or before == nil or age(value) ~= age(before)) then moved = true end
+		return value
+	end
+	for _, agent in state.agents do agent.finished_seconds = seconds(agent.finished_here, agent.finished_seconds) end
 	if state.usage then state.usage.age_ms = if state.usage.at_here then now - state.usage.at_here else 0 end
-	if state.details then state.details.finished_seconds = seconds(state.details.finished_here) end
+	if state.details then state.details.finished_seconds = seconds(state.details.finished_here, state.details.finished_seconds) end
+	return moved
 end
 
 local function apply_snapshot(state, data, cx)
@@ -310,8 +316,13 @@ local function apply_snapshot(state, data, cx)
 	if state.page == "agents" then inspect_selected(state, cx) end
 end
 
--- Per open block: its state and cx, and the `seq` of the snapshot and details it applied.
+-- Per open block: its state and cx, and the `seq` and `clock` of the snapshot and
+-- details it applied.
 local blocks = {}
+-- A reloaded window restarts `seq`; its `clock` tells its entries from older ones.
+local function unseen(entry, last)
+	return type(entry) == "table" and (entry.seq ~= last.seq or entry.clock ~= last.clock)
+end
 -- The pending poll, rescheduled sooner when a block opens.
 local next_poll, poll
 
@@ -331,18 +342,22 @@ function poll()
 			models_controller.detach(pane)
 			github_controller.detach(pane)
 			ops_controller.detach(pane)
-			pcall(tern.kv.set, "snapshot:" .. id, nil)
-			pcall(tern.kv.set, "details:" .. id, nil)
+			-- The window clears these too; each store write rewrites the whole store.
+			for _, kind in { "snapshot", "details", "carly" } do
+				pcall(function()
+					if tern.kv.get(kind .. ":" .. id) ~= nil then tern.kv.set(kind .. ":" .. id, nil) end
+				end)
+			end
 			continue
 		end
 		local ok, snapshot, details = pcall(function() return tern.kv.get("snapshot:" .. id), tern.kv.get("details:" .. id) end)
 		local changed = false
-		if ok and type(snapshot) == "table" and snapshot.seq ~= block.snapshot then
-			block.snapshot, changed = snapshot.seq, true
+		if ok and unseen(snapshot, block.snapshot) then
+			block.snapshot, changed = { seq = snapshot.seq, clock = snapshot.clock }, true
 			apply_snapshot(block.state, snapshot, block.cx)
 		end
-		if ok and type(details) == "table" and details.seq ~= block.details then
-			block.details = details.seq
+		if ok and unseen(details, block.details) then
+			block.details = { seq = details.seq, clock = details.clock }
 			-- A late reply for a previous selection must not replace the current one.
 			if type(details.details) == "table" and details.details.pane == block.state.selected then
 				local value = details.details
@@ -352,9 +367,8 @@ function poll()
 		end
 		refresh_projects(block.state, block.cx)
 		if block.state.loaded then
-			-- Ages advance without a new entry.
-			age(block.state)
-			changed = true
+			-- Ages advance without a new entry; Agents redraws when one it shows reads differently.
+			if advance_ages(block.state) or block.state.page ~= "agents" then changed = true end
 		else
 			loading = true
 		end
@@ -407,7 +421,6 @@ end
 local function select_page(state, id, cx)
 	if not page_by_id[id] or state.page == id then return end
 	state.page = id
-	if id == "agents" then inspect_selected(state, cx) end
 	local page = page_by_id[id]
 	if page.enter then page.enter(state, cx) end
 end
@@ -424,7 +437,7 @@ tern.block.define("agents", {
 				state[entry.state or entry.id] = entry.init(saved_pages[entry.id])
 			end
 		end
-		blocks[cx.pane] = { state = state, cx = cx }
+		blocks[cx.pane] = { state = state, cx = cx, snapshot = {}, details = {} }
 		schedule(LOADING_MS)
 		if page_by_id[page].enter then page_by_id[page].enter(state, cx) end
 		return state
