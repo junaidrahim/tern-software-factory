@@ -466,7 +466,8 @@ end
 
 -- Links name the block they come from: Tern reports the focused pane, not the
 -- block, as a link's pane when the block opens it. A `pane` link carries the
--- agent's full id, which only the block's host half sees.
+-- agent's full id, which only the block's host half sees. The window may list
+-- agents by full id or by its low 44 bits, so the link matches either.
 tern.route.link(function(request, cx)
 	local repository = open_repository(request, cx)
 	if repository then return repository end
@@ -477,32 +478,30 @@ tern.route.link(function(request, cx)
 	local block = find_block(cx, block_key)
 	if not block then return { handled = true } end
 	local full = tonumber(id)
-	local target = full % 2^44
 	local hosts = hosts_by_pane(cx)
-	if hosts[block.pane] ~= nil and hosts[target] == hosts[block.pane] then
-		for _, agent in cx.agents:list() do
-			if agent.pane == target and agent.state ~= "exited" then
-				if action == "pane" then
-					focus(cx, target, full, "Cannot go to the agent's pane")
-				else
-					-- The panel of an agent that is not working changes with its state or last message.
-					local cached, now, current = details[target], tern.now(), signature(agent)
-					if not cached or cached.signature ~= current or (agent.state == "working" and now - cached.at >= 1000) then
-						cached = { at = now, signature = current, value = tracking.read(cx, agent, finished[target]) }
-						details[target] = cached
-					end
-					write("details", block_key, { details = cached.value })
+	for _, agent in cx.agents:list() do
+		local target = agent.pane
+		if (target == full or target == full % 2^44) and agent.state ~= "exited"
+			and hosts[block.pane] ~= nil and hosts[target] == hosts[block.pane] then
+			if action == "pane" then
+				focus(cx, target, full, "Cannot go to the agent's pane")
+			else
+				-- The panel of an agent that is not working changes with its state or last message.
+				local cached, now, current = details[target], tern.now(), signature(agent)
+				if not cached or cached.signature ~= current or (agent.state == "working" and now - cached.at >= 1000) then
+					cached = { at = now, signature = current, value = tracking.read(cx, agent, finished[target]) }
+					details[target] = cached
 				end
-				return { handled = true }
+				write("details", block_key, { details = cached.value })
 			end
+			return { handled = true }
 		end
-
 	end
 	if action == "pane" then
 		-- The next refresh drops its row.
 		cx:toast("info", "This agent is no longer running")
 	else
-		write("details", block_key, { details = { pane = target, unavailable = true } })
+		write("details", block_key, { details = { pane = full, unavailable = true } })
 	end
 	return { handled = true }
 end)

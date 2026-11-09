@@ -233,6 +233,18 @@ focusRuns[1].done({ status = 1, stderr = "no block is called that\n", timed_out 
 assert(notice == "Cannot go to the agent's pane", "A failed CLI focus says so")
 tern.pane.list, shortened[200], notice = listPanes, nil, nil
 table.clear(focusRuns)
+-- A window that lists agents by full ids above 2^44 must navigate to and inspect them by those ids.
+local wide = 2^44 + 200
+local hostList = cx.hosts.list
+localAgent.pane, agents[4].pane = wide, wide
+cx.hosts.list = function() return { { id = 1, panes = { 100, wide, 300, 500, 600 } }, { id = 2, panes = { 400 } } } end
+focused = nil
+route({ pane = 100, url = "tern-software-factory://pane/100/" .. string.format("%.0f", wide) }, cx)
+assert(focused == wide and notice == nil, "A full-id agent link focuses that agent")
+route({ pane = 100, url = "tern-software-factory://inspect/100/" .. string.format("%.0f", wide) }, cx)
+assert(store["details:100"].details.pane == wide and not store["details:100"].details.unavailable,
+	"A full-id agent link loads that agent's activity")
+localAgent.pane, agents[4].pane, cx.hosts.list, focused = 200, 200, hostList, nil
 key("down")
 assert(state.selected == 300)
 agents[2].state = "working"
